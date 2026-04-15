@@ -1,0 +1,18 @@
+name: bundle_static_two_legs
+asset_key: RB_HC_BUNDLE
+asset_mode: bundle
+currency: CNY
+
+components:
+  - component_key: rb
+    symbol: RB
+    contract_scope: single_symbol
+  - component_key: hc
+    symbol: HC
+    contract_scope: single_symbol
+
+bundle_rule:
+  weight_mode: static
+  static_weights:
+    rb: 0.6
+    hc: 0.4

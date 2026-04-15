@@ -1,0 +1,22 @@
+name: bundle_sync_rebalance
+asset_key: BLACK_SYNC_SCHEMA
+asset_mode: bundle
+currency: CNY
+
+components:
+  - component_key: rb
+    symbol: RB
+    contract_scope: single_symbol
+  - component_key: hc
+    symbol: HC
+    contract_scope: single_symbol
+
+bundle_rule:
+  weight_mode: external
+  rebalance_frequency: monthly
+  smoothing_window: 2
+  sync_mode: rebalance
+  sync_frequency: monthly
+  sync_components:
+    - rb
+    - hc

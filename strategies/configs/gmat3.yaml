@@ -1,0 +1,8 @@
+score_lookbacks: [63, 126, 252]
+top_pct: 0.30
+bottom_pct: 0.0
+base_risk: 0.10
+waf_threshold: 0.045
+waf_target: 0.040
+n_sub: 4
+rebalance_freq: staggered

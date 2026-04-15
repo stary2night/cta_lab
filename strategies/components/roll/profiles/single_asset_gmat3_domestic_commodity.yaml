@@ -1,0 +1,32 @@
+name: cu_gmat3_domestic_commodity
+asset_key: CU
+asset_mode: single
+currency: CNY
+rule_profile: gmat3_domestic_commodity
+roll_days: 3
+lifecycle_date_field: last_holding_date
+market_state_field: open_interest
+
+lifecycle_rule_config:
+  kind: fixed_days_before_expiry
+  params:
+    roll_days: 3
+    date_field: last_holding_date
+
+market_state_rule_config:
+  kind: gmat3_domestic_commodity
+  params: {}
+
+execution_rule_config:
+  kind: linear
+  params:
+    roll_days: 3
+
+selector_rule_config:
+  kind: prefer_selected
+  params: {}
+
+metadata:
+  source: gmat3
+  contract_type: domestic_commodity
+  notes: generic_contract_only

@@ -1,0 +1,34 @@
+name: bundle_black_style
+asset_key: BLACK
+asset_mode: bundle
+currency: CNY
+
+components:
+  - component_key: rb
+    symbol: RB
+    contract_scope: single_symbol
+  - component_key: hc
+    symbol: HC
+    contract_scope: single_symbol
+  - component_key: i
+    symbol: I
+    contract_scope: single_symbol
+  - component_key: j
+    symbol: J
+    contract_scope: single_symbol
+  - component_key: jm
+    symbol: JM
+    contract_scope: single_symbol
+
+bundle_rule:
+  weight_mode: static
+  static_weights:
+    rb: 0.2
+    hc: 0.2
+    i: 0.2
+    j: 0.2
+    jm: 0.2
+  weight_min: 0.05
+  weight_max: 0.35
+  rebalance_frequency: annual
+  smoothing_window: 10

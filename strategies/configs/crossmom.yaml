@@ -1,0 +1,5 @@
+score_lookbacks: [63, 126, 252]
+top_pct: 0.30
+bottom_pct: 0.30
+target_vol: 0.40
+rebalance_freq: monthly

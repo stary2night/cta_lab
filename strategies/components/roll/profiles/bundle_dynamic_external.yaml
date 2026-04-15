@@ -1,0 +1,17 @@
+name: bundle_dynamic_external
+asset_key: RB_HC_DYNAMIC
+asset_mode: bundle
+currency: CNY
+
+components:
+  - component_key: rb
+    symbol: RB
+    contract_scope: single_symbol
+  - component_key: hc
+    symbol: HC
+    contract_scope: single_symbol
+
+bundle_rule:
+  weight_mode: external
+  rebalance_frequency: monthly
+  smoothing_window: 2

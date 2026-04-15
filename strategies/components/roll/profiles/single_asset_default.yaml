@@ -1,0 +1,33 @@
+name: rb_default_single_asset
+asset_key: RB
+asset_mode: single
+currency: CNY
+rule_profile: default_single_asset
+roll_days: 3
+lifecycle_date_field: last_holding_date
+market_state_field: open_interest
+
+lifecycle_rule_config:
+  kind: fixed_days_before_expiry
+  params:
+    roll_days: 3
+    date_field: last_holding_date
+
+market_state_rule_config:
+  kind: field_max
+  params:
+    field_name: open_interest
+
+execution_rule_config:
+  kind: linear
+  params:
+    roll_days: 3
+
+selector_rule_config:
+  kind: hybrid
+  params: {}
+
+metadata:
+  example_only: true
+  notes: generic_contract_only
+

@@ -18,6 +18,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import warnings
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 
@@ -57,8 +62,12 @@ class CorrCapSizer(Sizer):
         returns_df: pd.DataFrame,
         window: int = 252,
         min_periods: int = 63,
+        cache_dir: Optional[str | Path] = None,
+        force_refresh: bool = False,
     ) -> dict[pd.Timestamp, np.ndarray]:
         """计算滚动相关性矩阵并缓存为 {date: ndarray}。
+
+        首次调用耗时约 20s；启用 cache_dir 后后续调用直接读磁盘（<1s）。
 
         Parameters
         ----------
@@ -68,11 +77,32 @@ class CorrCapSizer(Sizer):
             滚动窗口天数，默认 252。
         min_periods:
             最少有效天数，默认 63。
+        cache_dir:
+            磁盘缓存目录。不为 None 时，首次计算后写入
+            ``<cache_dir>/corr_cache_<hash>.npz``，后续直接读取。
+            hash 由 (columns, index, window, min_periods) 决定，
+            数据或参数改变后自动失效。
+        force_refresh:
+            True 时忽略缓存，强制重新计算并覆写。
 
         Returns
         -------
         dict mapping pd.Timestamp → shape=(n_sym, n_sym) 相关性矩阵。
         """
+        # ── 缓存路径 ──────────────────────────────────────────────────────────
+        cache_path: Optional[Path] = None
+        if cache_dir is not None:
+            cache_path = CorrCapSizer._corr_cache_path(
+                returns_df, window, min_periods, Path(cache_dir)
+            )
+
+        # ── 尝试读取缓存 ──────────────────────────────────────────────────────
+        if cache_path is not None and not force_refresh and cache_path.exists():
+            loaded = CorrCapSizer._load_corr_cache(cache_path, returns_df)
+            if loaded is not None:
+                return loaded
+
+        # ── 计算 ──────────────────────────────────────────────────────────────
         assets = returns_df.columns.tolist()
         rolling_corr = returns_df.rolling(window, min_periods=min_periods).corr()
 
@@ -87,7 +117,65 @@ class CorrCapSizer(Sizer):
             np.fill_diagonal(mat, 1.0)
             corr_cache[dt] = mat
 
+        # ── 写入缓存 ──────────────────────────────────────────────────────────
+        if cache_path is not None:
+            CorrCapSizer._save_corr_cache(corr_cache, returns_df, cache_path)
+
         return corr_cache
+
+    # ── 缓存辅助（内部） ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _corr_cache_key(
+        returns_df: pd.DataFrame, window: int, min_periods: int
+    ) -> str:
+        """基于 (columns, date range, n_rows, window, min_periods) 生成哈希。"""
+        payload = (
+            f"{sorted(returns_df.columns.tolist())}"
+            f"|{returns_df.index[0]}|{returns_df.index[-1]}"
+            f"|{len(returns_df)}|{window}|{min_periods}"
+        )
+        return hashlib.md5(payload.encode()).hexdigest()[:12]
+
+    @staticmethod
+    def _corr_cache_path(
+        returns_df: pd.DataFrame, window: int, min_periods: int, cache_dir: Path
+    ) -> Path:
+        key = CorrCapSizer._corr_cache_key(returns_df, window, min_periods)
+        return cache_dir / f"corr_cache_{key}.npz"
+
+    @staticmethod
+    def _save_corr_cache(
+        corr_cache: dict[pd.Timestamp, np.ndarray],
+        returns_df: pd.DataFrame,
+        path: Path,
+    ) -> None:
+        """将 corr_cache 序列化为 npz 文件。"""
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            dates = np.array([str(dt) for dt in corr_cache.keys()])
+            mats = np.stack(list(corr_cache.values()))        # (n_dates, n, n)
+            cols = np.array(returns_df.columns.tolist())
+            np.savez_compressed(path, dates=dates, mats=mats, cols=cols)
+        except Exception as e:
+            warnings.warn(f"CorrCap 缓存写入失败（{path}）: {e}", stacklevel=3)
+
+    @staticmethod
+    def _load_corr_cache(
+        path: Path, returns_df: pd.DataFrame
+    ) -> Optional[dict[pd.Timestamp, np.ndarray]]:
+        """从 npz 文件加载 corr_cache；列不匹配时返回 None（缓存失效）。"""
+        try:
+            data = np.load(path, allow_pickle=False)
+            cached_cols = data["cols"].tolist()
+            if cached_cols != returns_df.columns.tolist():
+                return None          # 品种集合变化，缓存失效
+            dates = [pd.Timestamp(d) for d in data["dates"]]
+            mats = data["mats"]     # (n_dates, n, n)
+            return {dt: mats[i] for i, dt in enumerate(dates)}
+        except Exception as e:
+            warnings.warn(f"CorrCap 缓存读取失败（{path}）: {e}，将重新计算。", stacklevel=3)
+            return None
 
     def compute(
         self,

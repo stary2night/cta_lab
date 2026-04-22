@@ -6,6 +6,7 @@ from .csv_source import CSVSource
 from .binary_source import BinarySource
 from .sqlite_source import SQLiteSource
 from .column_keyed_source import ColumnKeyedSource
+from .contract_selector import ContractSelector, MaxInterestSelector, MaxVolumeSelector
 
 __all__ = [
     "DataSource",
@@ -14,4 +15,7 @@ __all__ = [
     "BinarySource",
     "SQLiteSource",
     "ColumnKeyedSource",
+    "ContractSelector",
+    "MaxInterestSelector",
+    "MaxVolumeSelector",
 ]

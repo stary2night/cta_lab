@@ -103,6 +103,25 @@ DOC_SPECS: tuple[DocSpec, ...] = (
         description="组合层说明与 signal -> portfolio 约定",
     ),
     DocSpec(
+        doc="backtest/README.md",
+        code_globs=(
+            "backtest/*.py",
+            "backtest/event/*.py",
+            "backtest/fees/*.py",
+            "backtest/execution/*.py",
+        ),
+        required_snippets=(
+            "VectorizedBacktest",
+            "EventDrivenBacktestEngine",
+            "CostModel",
+            "ProportionalCostModel",
+            "FixedBpsSlippage",
+            "on_start",
+            "on_bar",
+        ),
+        description="回测层范式、成本模型与事件策略写法",
+    ),
+    DocSpec(
         doc="DESIGN.md",
         code_globs=(
             "data/*.py",
@@ -149,6 +168,7 @@ DOC_SPECS: tuple[DocSpec, ...] = (
             "data/README.md",
             "signals/README.md",
             "portfolio/README.md",
+            "backtest/README.md",
             "DESIGN.md",
             "DEV_PROGRESS.md",
         ),

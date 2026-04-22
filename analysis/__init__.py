@@ -16,7 +16,17 @@ Decomposer 架构（推荐使用）
 """
 
 # ── 扁平函数（向后兼容）──────────────────────────────────────────────────────
-from .metrics import performance_summary, rolling_metrics, underwater_series
+from .metrics import (
+    performance_summary,
+    rolling_metrics,
+    underwater_series,
+    pnl_stats,
+    annual_stats,
+    decade_stats,
+    monthly_pivot,
+    sector_stats,
+    asset_stats,
+)
 from .attribution import asset_contribution, annual_contribution, sector_performance
 from .crisis import crisis_alpha_analysis, DEFAULT_CRISIS_EVENTS, convexity_analysis
 from .signal import (
@@ -41,6 +51,11 @@ from .report import (
     plot_momentum_persistence,
     plot_convexity,
     plot_asset_contribution,
+    plot_nav_with_drawdown,
+    plot_annual_bar,
+    plot_rolling_sharpe,
+    plot_monthly_heatmap,
+    plot_sector_nav,
     StrategyReport,
 )
 
@@ -58,6 +73,7 @@ from .decomposers import (
     CrisisDecomposer,
     SignalDecomposer,
     LongShortDecomposer,
+    PeriodicDecomposer,
 )
 
 __all__ = [
@@ -65,6 +81,12 @@ __all__ = [
     "performance_summary",
     "rolling_metrics",
     "underwater_series",
+    "pnl_stats",
+    "annual_stats",
+    "decade_stats",
+    "monthly_pivot",
+    "sector_stats",
+    "asset_stats",
     # attribution
     "asset_contribution",
     "annual_contribution",
@@ -95,6 +117,11 @@ __all__ = [
     "plot_momentum_persistence",
     "plot_convexity",
     "plot_asset_contribution",
+    "plot_nav_with_drawdown",
+    "plot_annual_bar",
+    "plot_rolling_sharpe",
+    "plot_monthly_heatmap",
+    "plot_sector_nav",
     "StrategyReport",
     # Decomposer 架构
     "AnalysisContext",
@@ -107,4 +134,5 @@ __all__ = [
     "CrisisDecomposer",
     "SignalDecomposer",
     "LongShortDecomposer",
+    "PeriodicDecomposer",
 ]

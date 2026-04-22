@@ -9,8 +9,14 @@ from .charts import (
     plot_momentum_persistence,
     plot_convexity,
     plot_asset_contribution,
+    plot_nav_with_drawdown,
+    plot_annual_bar,
+    plot_rolling_sharpe,
+    plot_monthly_heatmap,
+    plot_sector_nav,
 )
 from .strategy_report import StrategyReport
+from .output import BacktestOutput
 
 __all__ = [
     "plot_nav",
@@ -21,5 +27,11 @@ __all__ = [
     "plot_momentum_persistence",
     "plot_convexity",
     "plot_asset_contribution",
+    "plot_nav_with_drawdown",
+    "plot_annual_bar",
+    "plot_rolling_sharpe",
+    "plot_monthly_heatmap",
+    "plot_sector_nav",
     "StrategyReport",
+    "BacktestOutput",
 ]

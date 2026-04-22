@@ -737,6 +737,92 @@ class DataLoader:
         self._set_cached(cache_key, result)
         return result
 
+    def load_returns_matrix(
+        self,
+        symbols: list[str],
+        start: str | None = None,
+        end: str | None = None,
+        adjust: str = "nav",
+        min_obs: int = 0,
+    ) -> pd.DataFrame:
+        """加载多品种日收益率宽表，返回 DataFrame(dates × symbols)。
+
+        对 load_continuous_matrix() 的薄包装：加载连续价格矩阵后取一阶百分比收益率。
+        支持路径③（无合约元数据、内联 OI-max），与 load_continuous_matrix() 共享底层缓存。
+
+        Parameters
+        ----------
+        symbols:
+            品种代码列表。
+        start / end:
+            日期范围过滤（传递给 load_continuous_matrix()）。
+        adjust:
+            连续价格拼接方式，默认 'nav'（Buy-and-Roll NAV）。
+        min_obs:
+            最少有效观测天数；不足此值的品种从结果中剔除，默认 0（不过滤）。
+
+        Returns
+        -------
+        DataFrame，index=DatetimeIndex，columns=品种代码，值=日百分比收益率。
+        首行因无前值为 NaN，调用方按需 dropna。
+        """
+        cache_key = ("load_returns_matrix", tuple(symbols), start, end, adjust, min_obs)
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        price_matrix = self.load_continuous_matrix(
+            symbols=symbols,
+            start=start,
+            end=end,
+            adjust=adjust,
+        )
+
+        if price_matrix.empty:
+            return pd.DataFrame()
+
+        returns = price_matrix.pct_change()
+
+        if min_obs > 0:
+            valid_counts = returns.notna().sum()
+            keep = valid_counts[valid_counts >= min_obs].index.tolist()
+            returns = returns[keep]
+
+        self._set_cached(cache_key, returns)
+        return returns
+
+    def available_symbols(self, exclude: set[str] | None = None) -> list[str]:
+        """列举 kline_source 中所有可用品种代码。
+
+        对 kline_source.list_keys() 的结果去除 KlineSchema.key_prefix，
+        返回排序后的品种代码列表。仅处理顶层文件（不含子目录路径）。
+
+        Parameters
+        ----------
+        exclude:
+            需排除的品种代码集合，默认不排除。
+
+        Examples
+        --------
+        >>> loader = DataLoader(ParquetSource("overseas_daily_full/"), KlineSchema.overseas())
+        >>> loader.available_symbols(exclude={"VX", "BTC"})
+        ['6A', '6B', '6C', ...]
+        """
+        prefix = self._kline_schema.key_prefix
+        symbols: list[str] = []
+        for key in self._kline_source.list_keys():
+            if "/" in key:           # 跳过子目录路径
+                continue
+            if prefix and not key.startswith(prefix):
+                continue
+            sym = key[len(prefix):]  # 去除 key_prefix（如 "daily_ES" → "ES"）
+            symbols.append(sym)
+
+        if exclude:
+            symbols = [sym for sym in symbols if sym not in exclude]
+
+        return sorted(set(symbols))
+
     # ------------------------------------------------------------------
     # 合约信息
     # ------------------------------------------------------------------
@@ -867,6 +953,93 @@ class DataLoader:
     # 连续合约
     # ------------------------------------------------------------------
 
+    def _build_continuous_from_raw_kline(
+        self,
+        symbol: str,
+        start: str | None = None,
+        end: str | None = None,
+        nav_output: str = "price",
+    ) -> "ContinuousSeries":
+        """路径③：从多合约 kline 宽表内联 OI-max 构建 ContinuousSeries（NAV 模式）。
+
+        适用于只有逐品种 kline 文件、无独立合约元数据表的数据源
+        （如 china_daily_full/、overseas_daily_full/）。
+        通过 KlineSchema 的列名映射同时支持国内和境外数据格式。
+
+        Roll 处理：换仓日收益计为 0（不引入跨合约价差），NAV 价格在换仓日保持平坦。
+        换仓点记录在 ContractSchedule 中，供诊断使用。
+        """
+        s = self._kline_schema
+        file_key = s.key_prefix + symbol
+        df = self._kline_source.read_dataframe(file_key).copy()
+
+        # 1. 规范化日期 index
+        if not isinstance(df.index, pd.DatetimeIndex):
+            if s.date_col in df.columns:
+                df.index = pd.DatetimeIndex(pd.to_datetime(df[s.date_col]))
+                df = df.drop(columns=[s.date_col], errors="ignore")
+            else:
+                df.index = pd.DatetimeIndex(pd.to_datetime(df.index))
+        df.index.name = "date"
+
+        # 2. 规范化关键列（OI、结算价）
+        df[s.oi_col] = pd.to_numeric(df[s.oi_col], errors="coerce").fillna(0.0)
+        df[s.settle_col] = pd.to_numeric(df[s.settle_col], errors="coerce")
+
+        # 3. OI-max：每日保留持仓量最大的合约（与 MaxInterestSelector 逻辑一致）
+        df_reset = df.reset_index()
+        df_reset = df_reset.sort_values(["date", s.oi_col], ascending=[True, False])
+        df_reset = df_reset.drop_duplicates(subset=["date"], keep="first")
+        df_main = df_reset.set_index("date").sort_index()
+
+        if df_main.empty or df_main[s.settle_col].isna().all():
+            raise ValueError(f"No valid data for '{symbol}' after OI-max selection.")
+
+        # 4. 换仓检测与 ContractSchedule 构建
+        if s.contract_col is not None and s.contract_col in df_main.columns:
+            contract_raw = df_main[s.contract_col]
+            same_contract = contract_raw == contract_raw.shift(1)
+            contract_labels = (
+                symbol + "_" + contract_raw.astype(str)
+                if s.compound_code
+                else contract_raw.astype(str)
+            )
+            schedule = self._build_schedule_from_contract_series(symbol, contract_labels)
+        else:
+            same_contract = pd.Series(True, index=df_main.index)
+            schedule = ContractSchedule([], symbol)
+
+        # 首日无前一日对比，视作换仓（收益 = 0）
+        if not same_contract.empty:
+            same_contract.iloc[0] = False
+
+        # 5. 计算日收益率：换仓日 = 0，超过 ±50% 视为数据异常也归 0
+        raw_ret = df_main[s.settle_col].pct_change()
+        raw_ret[~same_contract] = 0.0
+        raw_ret[raw_ret.abs() > 0.5] = 0.0
+        raw_ret.iloc[0] = 0.0
+        raw_ret = raw_ret.fillna(0.0)
+
+        # 6. 构建 NAV 价格序列（锚定到首日结算价，或归一化到 1.0）
+        if nav_output == "normalized":
+            initial_price = 1.0
+        else:
+            first_valid = df_main[s.settle_col].first_valid_index()
+            initial_price = (
+                float(df_main.loc[first_valid, s.settle_col])
+                if first_valid is not None
+                else 1.0
+            )
+        nav = initial_price * (1.0 + raw_ret).cumprod()
+
+        # 7. 按 start/end 截取
+        if start is not None:
+            nav = nav[nav.index >= pd.Timestamp(start)]
+        if end is not None:
+            nav = nav[nav.index <= pd.Timestamp(end)]
+
+        return ContinuousSeries(symbol, nav, schedule)
+
     def load_continuous(
         self,
         symbol: str,
@@ -880,8 +1053,11 @@ class DataLoader:
     ) -> ContinuousSeries:
         """加载或动态构建连续合约序列。
 
-        优先从存储加载预构建数据（key: f"continuous/{symbol}_{adjust}"）。
-        若不存在则动态构建：加载合约列表 + 各合约 K 线 + OIMaxRoll 滚动。
+        按优先级依次尝试三条路径：
+          路径①  从存储加载预构建 continuous 文件（key: f"continuous/{symbol}_{adjust}"）。
+          路径③  KlineSchema 声明了 contract_col（多合约混合表）时，从原始 kline 宽表
+                 内联 OI-max 主力选择，无需独立合约元数据。
+          路径②  动态构建：加载合约列表 + 各合约 K 线 + OIMaxRoll 滚动（需 contract_source）。
 
         calendar：用于 ContinuousSeries.build 的交易日序列。
             - 显式传入：直接使用。
@@ -932,7 +1108,18 @@ class DataLoader:
             self._set_cached(cache_key, result)
             return result
 
-        # ── 动态构建 ────────────────────────────────────────────────────
+        # ── 路径③：多合约 kline 宽表内联 OI-max（无独立合约元数据时的 fallback）───
+        # 当 KlineSchema 声明了 contract_col（多合约混合表格式）时，直接从原始宽表做
+        # OI-max 主力选择，跳过 load_contracts() 的合约元数据依赖。
+        # 适用于 china_daily_full/、overseas_daily_full/ 等只有 kline 文件的数据源。
+        if self._kline_schema.contract_col is not None:
+            result = self._build_continuous_from_raw_kline(
+                symbol, start=start, end=end, nav_output=nav_output
+            )
+            self._set_cached(cache_key, result)
+            return result
+
+        # ── 路径②：动态构建（需合约元数据）────────────────────────────────────
         # 1. 加载合约列表（全量，不受 start/end 约束）
         contracts = self.load_contracts(symbol)
         if not contracts:

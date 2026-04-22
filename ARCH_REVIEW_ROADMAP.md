@@ -1,429 +1,162 @@
 # cta_lab 架构复盘与通用化升级 Roadmap
 
-这份文档记录 GMAT3 策略复现之后，对 `cta_lab` 平台架构的阶段性复盘。
+> 最后更新：2026-04-21
 
-结论不是 “GMAT3 没法在 `cta_lab` 中实现”，恰恰相反：
-- GMAT3 已经在 `cta_lab` 中完成复现
-- `value_df / weight_df / index_series` 已与旧 `ddb` 对齐
+这份 roadmap 只保留当前仍然有效的复盘结论与主线，不再重复早期阶段性叙述。
 
-但这次复现也清楚暴露出一个问题：
+## 复盘结论
 
-**`cta_lab` 目前已经具备承载复杂策略的能力，但对复杂复合策略的通用抽象还不够。**
+GMAT3 在 `cta_lab` 中已经不是概念验证，而是实际落地案例。这件事验证了两点：
 
-下一阶段的目标，不是继续快速适配更多策略，而是基于 GMAT3 的复现经验，
-推进 `cta_lab` 的模块化、通用化和可穿透性升级。
+1. 当前平台已经可以承载复杂复合策略
+2. 平台对复杂复合策略的正式通用抽象还没有完全收口
 
-这份 roadmap 特别强调一条原则：
+换句话说，问题不在“能不能跑”，而在“哪些能力已经成为平台能力，哪些仍停留在单策略内部”。
 
-**先做目标明确、边界清晰的任务；暂时看不清、共性还不稳定的部分先搁置。**
+## 当前已经被验证的基础
 
----
+- `data/ -> signals/ -> portfolio/ -> backtest/ -> analysis/ -> strategies/` 主链已成立
+- `signals / portfolio` 分层已经比早期更清晰
+- GMAT3 已形成目录化实现，而不是单文件特例
+- `strategies/components/roll/` 已经出现 `RollStrategyBase` 这类可复用组件对象
 
-## 一、复盘结论
-
-### 1. 当前平台的优势
-
-- `data -> signals -> portfolio -> analysis -> strategy` 研究链路已经完整
-- 普通 CTA、因子研究、notebook 验证、组合构建已经有较好基础
-- GMAT3 的主链也已经跑通，说明平台底座没有问题
-
-### 2. 当前平台的短板
-
-GMAT3 的成功复现，更多体现为：
-- `cta_lab` 能容纳一个复杂策略子系统
-
-而不是：
-- `cta_lab` 已经抽象出了支持复杂复合策略的正式通用模块
-
-本次复现中，很多关键逻辑仍停留在：
-- `strategies/implementations/gmat3/data_access.py`
-- `strategies/implementations/gmat3/main_contract.py`
-- `strategies/implementations/gmat3/roll_return.py`
-- `strategies/implementations/gmat3/sub_portfolio.py`
-- `strategies/implementations/gmat3/weights.py`
-- `strategies/implementations/gmat3/index_builder.py`
-
-这说明：
-- 平台底层已经复用了一部分
-- 但 Roll Strategy、资产级价值序列、组合调度、穿透输出等能力，
-  还没有成为 `cta_lab` 的正式通用能力
-
----
-
-## 二、GMAT3 带来的核心架构认识
-
-### 1. GMAT3 本质是复合策略
-
-GMAT3 可以拆成两层：
-
-1. 底层资产层：
-   - 各类 `Roll Strategy`
-   - 每个底层策略输出一个可投资的资产价值序列 `V_c(t)`
-
-2. 上层配置层：
-   - 对这些底层资产做 `Cross Asset Allocation`
-   - 通过 `Cross-Momentum / Cross-Reversal / Risk Control`
-     形成组合构成与权重
-
-因此，GMAT3 的本质是：
-
-**Roll Strategy + Cross Asset Allocation 的复合策略。**
-
-### 2. 复杂策略的关键不是“层数多”，而是“层之间可穿透”
-
-未来平台必须避免一种假象：
-- 上层只看到某个“组合资产”或“子策略净值”
-- 却无法向下还原到底层真实交易资产是什么、比例是多少
-
-如果只能看到最终策略表现，却无法穿透到底层持仓构成，
-那平台就无法真正支持交易、风控和执行。
-
-因此，下一阶段架构升级必须把“可穿透性”作为硬约束。
-
----
-
-## 三、下一阶段只聚焦 3 条主线
-
-这次复盘之后，当前最明确、最值得优先推进的方向只有 3 条：
+## 仍然需要继续收口的四条主线
 
 ### 主线 1：Roll Strategy 组件化
 
-`data.load_continuous()` 远远不够表达复杂展期策略。
+这条主线当前已经从“纯设计讨论”推进到“有代码、有 profile、有结果对象”的阶段，但还没有完全成为平台标准层。
 
-未来需要一个专门支持多样化展期策略的组件层，负责：
-- 主力映射
-- 展期收益
-- 替代标的切换
-- 资产级价值序列构造
+当前已落地：
 
-### 主线 2：signals / portfolio 通用化增强
-
-GMAT3 暴露出两个共性需求：
-- `signals` 层不仅要能输出 score，还要能表达状态与筛选信号
-- `portfolio` 层不仅要能定仓，还要能支持 selection、调度、预算和应用时点分离
-
-### 主线 3：Look-Through 可穿透性
-
-未来任何融合型策略都必须支持：
-- 从上层策略穿透到底层子策略
-- 再穿透到底层真实资产
-- 最终还原出可交易资产及其比例
-
-如果做不到这一点，平台就只能做研究表现展示，无法真正支撑交易。
-
----
-
-## 四、明确的设计原则
-
-### 原则 1：优先抽象清晰的中间对象
-
-优先回收 GMAT3 中已经稳定的共性能力：
-- `main_df`
-- `roll_ret`
-- `value_series`
-- `selection / state`
-- `calc_dates / adjust_dates`
-- `weight_df`
-- `lookthrough_book`
-
-### 原则 2：优先“基类 + 配置 + 可插拔组件”，而不是大量继承子类
-
-特别是在 `Roll Strategy` 这一层：
-- 不建议为每种资产设计一个单独 class
-- 更合理的是：
-  - `RollStrategyBase`
-  - `RollStrategyProfile`
-  - 少量可插拔组件
-
-例如：
-- domestic equity roll profile
-- domestic bond roll profile
-- overseas futures roll profile
-- black composite profile
-
-这些更可能是不同 profile / config 实例，而不是一长串继承子类。
-
-### 原则 3：平台输出必须同时包含“表现结果”和“穿透结果”
-
-未来策略运行结果不能只返回：
-- `nav`
-- `index_series`
-
-还必须能返回：
-- `strategy_weights`
-- `sub_strategy_weights`
-- `underlying_asset_weights`
-- `contract_level_positions`
-- `lookthrough_records`
-
-### 原则 4：暂时不对不清晰问题过度设计
-
-例如：
-- `IndexEngine`
-- `Multi-Currency Engine`
-
-这些方向未来很可能有价值，但当前还不够清晰。
-现阶段不应把它们放在主线路径里，也不应为了“架构完整”过早拔高。
-
-目前更合理的做法是：
-- 先把它们视为 `backtest` 的后续增强项
-- 等前面 3 条主线稳定之后再决定是否独立抽象
-
----
-
-## 五、建议中的目标分层
-
-当前阶段建议只围绕下面 4 层来重构平台视角：
-
-### 1. Roll Strategy Layer
-
-代表底层资产级展期策略。
-
-输出：
-- `main_df`
-- `roll_ret`
-- `value_series`
-- `lookthrough_book`
-
-### 2. Cross-Asset Signal Layer
-
-以上层资产池为输入，做截面研究和信号判断。
-
-输出：
-- `score`
-- `state`
-- `selection_signal`
-
-### 3. Portfolio Construction Layer
-
-负责把 signal/state 转成真正的组合结构。
-
-应包含：
-- selection
-- risk budget
-- calc/apply separation
-- staggered schedule
-- blending
-
-输出：
-- `target_weights`
-- `applied_weights`
-- `rebalance_plan`
-
-### 4. Composite Strategy Assembly Layer
-
-负责把前面几层拼装成完整策略。
-
-例如：
-- GMAT3
-- 未来的多层 CTA 复合配置策略
-
-输出：
-- 完整策略运行结果
-- 表现视图
-- 可穿透视图
-
----
-
-## 六、关键模块化升级方向
-
-### A. Roll Strategy 抽象
-
-建议新增正式抽象：
 - `RollStrategyBase`
 - `RollStrategyProfile`
-- `MainContractSelector`
-- `RollReturnCalculator`
+- `RollStrategyResult`
+- `SingleAssetRollStrategy`
+- `BundleRollStrategy`
 - `ValueComposer`
 - `LookThroughResolver`
 
-这里要特别注意：
-- `DomesticEquityRollStrategy`、`DomesticBondRollStrategy` 等不一定是 class
-- 更可能只是 `RollStrategyBase` 的不同 profile / config 实例
+后续重点不是再快速加很多特例，而是：
 
-### B. 资产级价值序列对象
+- 稳定单资产规则族
+- 收口 bundle 输入与输出协议
+- 继续把复合策略真正需要的共性逻辑抽出来
 
-建议把“子组合价值序列”提升为正式对象，而不是只存在于某个策略内部。
+### 主线 2：signals / portfolio 通用化
 
-未来可以有类似：
-- `AssetValueSeries`
-- `CompositeAssetValueSeries`
+GMAT3、JPM 与海外趋势脚本都说明，`signals / portfolio` 已经不再是简单的“信号函数 + 定仓函数”。
 
-用于表达：
-- 单资产 roll 策略结果
-- 复合资产子组合结果
+当前已经明确的共性能力有：
 
-### C. signals 层增强
+- signal 与 raw score 分离
+- selector 承担 score -> 仓位意图桥接
+- `signal_mode` 让 direction / raw 两种语义并存
+- `StaggeredScheduler`、`blend()`、`StrategyBlender` 支持更复杂的组合组织
 
-建议补强以下能力：
-- cross momentum score
-- cross reversal state
-- risk state / risk penalty signal
-- 多状态联合输出
+后续重点是继续把这些约定稳定成更少歧义的公共接口，而不是在策略内部各写一套。
 
-重点不是再堆单一 signal 类，而是增强“截面状态表达”能力。
+### 主线 3：Look-Through
 
-### D. portfolio 层增强
+复杂策略如果只有最终净值，没有穿透结果，平台就只能做展示，难以继续支撑研究解释、风控和执行映射。
 
-建议正式支持：
-- selection
-- risk budget
-- `calc_dates`
-- `adjust_dates`
-- `computed vs applied`
-- 多子组合错峰融合
+Look-Through 仍然是最需要坚持的硬约束。
 
-将当前 GMAT3 中已经验证过的组合调度能力回收到平台层。
+当前已有基础：
 
-### E. Look-Through 抽象
+- roll 组件结果中已经带 `lookthrough_book`
+- GMAT3 子系统已经存在多层中间对象
 
-建议正式引入：
-- `AssetExposure`
-- `ExposureTree`
-- `LookThroughBook`
+后续重点：
 
-并要求所有复合策略支持：
-- 向下穿透到底层真实资产
-- 看到底层合约、比例和调仓变化
-- 输出真实可交易目标持仓
+- 统一穿透结果字段与粒度
+- 区分策略权重、子策略权重、底层资产权重、合约级持仓
+- 让上层策略运行结果天然保留可追溯链路
 
----
+### 主线 4：轻量事件驱动回测
 
-## 七、关于 Roll Strategy 组件应该放哪
+向量化回测已经证明适合当前大部分趋势/动量研究，但它天然绕开领域状态对象。对于未来需要记录组合状态、策略状态、订单成交与稀疏事件推进的策略，平台需要一条轻量事件驱动路径。
 
-这是当前最值得先定下来的一个问题。
+当前已落地第一阶段骨架：
 
-### 当前建议
+- `backtest/event/events.py`：`EventType` 与通用 `Event`
+- `backtest/event/market.py`：`MarketSnapshot`
+- `backtest/event/order.py`：`Order`、`Fill`、`Transaction` 与订单状态枚举
+- `backtest/event/state.py`：`PositionState`、`PortfolioState`、`StrategyState`
+- `backtest/event/context.py`：`SimulationContext`
+- `strategies/base/event_driven.py`：`EventDrivenStrategy` hook 协议
 
-**先不要直接把 Roll Strategy 提升为 `cta_lab` 一级组件。**
+当前已落地第二阶段最小闭环：
 
-更合理的第一步是：
-- 先放在 `strategies` 体系下
-- 但不再停留在某个具体策略目录里
+- `backtest/event/data_portal.py`：`MarketDataPortal`
+- `backtest/event/engine.py`：`EventDrivenBacktestEngine`
+- `backtest/event/broker.py`：`SimulatedBroker`
+- `backtest/event/recorder.py`：`EventRecorder`
+- `tests/test_backtest_module/test_event_engine.py`：target-weight 策略与 commission 的最小回归测试
 
-建议方向：
-- `strategies/asset_strategies/roll/`
-- 或 `strategies/components/roll/`
+当前已落地第三阶段正确性桥接：
 
-理由：
-- 它已经不是某个策略专属逻辑
-- 但它仍然属于“策略构造能力”，不是最底层基础设施
-- 先放在 `strategies` 体系下，演化成本最低，也最符合当前理解
+- `backtest/event/adapters.py`：`TargetWeightStrategyAdapter`
+- 可将现有 `weights_df` 包装成 callback 策略，交给事件驱动引擎运行
+- 对照测试已验证 `lag=0`、`fee=0`、每日权重口径下，事件驱动结果可与 `VectorizedBacktest` 对齐
 
-### 后续升级条件
+当前已落地第四阶段研究口径增强：
 
-只有当下面条件满足时，再考虑把它提升为一级组件：
-- 至少 2 到 3 类策略直接复用
-- 不再只是 CTA 内部的一种策略部件
-- 已经形成稳定的数据对象和接口约定
+- `TargetWeightStrategyAdapter.execution_lag`：支持按权重矩阵索引延迟执行目标权重
+- `TargetWeightStrategyAdapter.rebalance_dates`：支持稀疏调仓日，非调仓日只做持仓 mark-to-market
+- `EventRecorder`：turnover 改为基于真实成交 notional，而不是基于价格漂移后的权重差
+- 新增测试验证稀疏调仓下的权重漂移、零交易换手、延迟执行日期，以及 close-to-close 调仓对齐 `VectorizedBacktest(lag=1)`
 
----
+当前已落地第五阶段策略层接入：
 
-## 八、建议的实施顺序
+- `strategies/base/vectorized.py`：`VectorizedStrategy`
+- `strategies/base/event_driven.py`：`EventDrivenStrategy.run_event_backtest(...)`
+- `strategies/examples/event_driven.py`：`SimpleRelativeMomentumEventStrategy`
+- `notebooks/事件驱动回测最小示例.ipynb`：从策略层导入事件驱动样板，而不是在 notebook 内临时定义策略
 
-### Phase P1：平台能力边界梳理
+当前已开始把事件驱动范式接入正式策略包：
 
-目标：
-- 明确哪些 GMAT3 模块继续留在策略专属层
-- 哪些能力应回收进平台
+- `strategies/implementations/jpm_trend_trade/event_strategy.py`：`JPMEventDrivenStrategy`
+- JPM 事件策略将 t-stat、sigma 与 CorrCap rolling cache 等市场特征前移到 `on_start()` 预计算，`on_bar()` 只读取当天特征并处理状态/发单
+- 合成数据测试已覆盖 baseline 与 CorrCap 两条事件驱动回测路径
 
-产出：
-- 平台通用能力边界表
-- 策略专属能力边界表
+这条主线的边界也很明确：借鉴 backtrader、vn.py、rqalpha 的事件和状态设计，但只保留研究回测需要的轻量抽象，不做 gateway、实盘连接、异步撮合或 UI 平台。
+第二阶段仍然坚持这个边界：当前 broker 采用 snapshot 价格为参考立即成交，已补齐统一 `cost_model`、固定 bps 滑点和成交 notional 费用记录；后续再逐步补拒单、部分成交和更复杂冲击曲线等研究必要细节。
+基于这套成本模型，典型向量化策略入口也已回填 `--cost-bps` 与换手/成本报告输出；`VectorizedBacktest` 在启用 `vol_target` 时按 vol-target 后的有效执行权重计算换手和成本，并且热身期不向前回填未来 scale，使中低频 CTA 研究优先覆盖交易成本和换手暴露，而不是过早推进拒单或成交量约束。
 
-### Phase P2：Roll Strategy Layer 抽象
+## 当前不作为近期主线的方向
 
-目标：
-- 建立 `RollStrategyBase + Profile + Components` 体系
+以下方向可能有价值，但当前不再作为近期 roadmap 主路径：
 
-优先内容：
-- `main_contract`
-- `roll_return`
-- `value_series`
-- 替代标的切换
+- 独立的大而全 `IndexEngine`
+- 过早抽象的统一多币种 engine
+- 为单一 legacy 路径做过度兼容
+- 生产交易系统式的 gateway、实盘事件总线与完整订单管理平台
 
-### Phase P3：signals / portfolio 通用化增强
+原因很简单：这些方向还没有比 `Roll Strategy`、`Cross Asset Allocation`、`Look-Through`、轻量事件驱动回测更清晰的公共边界。
 
-目标：
-- 将 cross-asset signal + selection + schedule + budget 的共性能力平台化
+## 当前建议的目标层次
 
-优先内容：
-- selection
-- risk budget
-- stateful signals
-- calc/apply separation
-- staggered schedule
+围绕复杂复合策略，当前最清晰的目标层次仍然是四层：
 
-### Phase P4：Look-Through 能力建设
+1. Roll Strategy Layer
+   输出资产级价值序列、roll 信息与 Look-Through
+2. Cross Asset Allocation Layer
+   负责 Cross Asset Allocation、状态判断与筛选
+3. Portfolio Construction Layer
+   负责预算、约束、调度、应用时点、融合
+4. Composite Strategy Assembly Layer
+   把多层结果组装成完整策略与完整输出
 
-目标：
-- 让复合策略具备真实交易可落地的穿透输出
+## 当前路线判断
 
-优先内容：
-- 底层资产映射
-- 合约级暴露
-- 分层权重展开
-- 可交易目标持仓
+这份 roadmap 现在不再强调“要不要做平台通用化”，因为答案已经很明确：要，而且已经开始做。
 
-### Phase P5：Strategy Layer 重构
+当前真正重要的是：
 
-目标：
-- 正式支持“底层资产策略 + 上层配置策略”的复合装配方式
+- 只回收已经稳定的共性
+- 让 `RollStrategyBase`、`signals / portfolio`、Look-Through、事件驱动状态对象继续从“可用”走向“可复用”
+- 继续用真实策略验证抽象，而不是闭门设计
 
-重点：
-- `Roll Strategy + Cross Asset Allocation`
-- 统一运行结果对象
-- 统一穿透结果对象
+一句话概括当前 roadmap：
 
-### Phase P6：后续观察项
-
-以下主题暂时保留为后续观察项，不放入当前主线路径：
-- `IndexEngine` 是否独立抽象
-- `Multi-Currency Engine` 是否独立抽象
-- 更通用的指数编制引擎是否需要单独成层
-
-等前面主线完成、更多策略接入后，再决定是否正式提升。
-
----
-
-## 九、当前阶段建议
-
-短期内不建议继续快速接更多复杂策略。
-
-更合理的顺序是：
-
-1. 基于 GMAT3 的复现经验，完成平台架构 review
-2. 先做 `Roll Strategy` 抽象
-3. 再做 `signals / portfolio` 通用化增强
-4. 同时把 `Look-Through` 设计当作硬约束纳入
-5. 最后再回头决定不清晰的 engine 问题是否要升级成主线模块
-
-这样后续再接其他复杂 CTA / 多层配置策略时，才不会再次大量重写策略专属模块。
-
----
-
-## 十、阶段性判断
-
-到目前为止，可以明确认为：
-
-- GMAT3 复现工作已经完成
-- 复现结果有效
-- 平台当前的主要问题已经被真实策略暴露出来
-- 下一阶段的方向已经足够清晰，不需要继续靠“再接一个复杂策略”来试错
-
-因此，接下来的工作重点应该从“策略复现”切换到“平台升级”。
-
-这份 roadmap 即作为下一阶段讨论和设计的基础版本。
-
-补充说明：
-
-- `Phase P2` 已开始进入最小实现阶段
-- `strategies/components/roll/` 里已经形成：
-  - `SingleAssetRollStrategy`
-  - `BundleRollStrategy`
-  - 显式 `rule config`
-  - `profiles/` 样例
-- 当前仍然坚持先完成目标明确的事项：
-  - generic-contract-only 的单资产 roll
-  - bundle roll 的第一版 schema 与结果对象
-  - look-through 的统一输出
+以 GMAT3 为验证样本，把复杂策略真正需要的中间层收回平台，但只做已经看清的部分。

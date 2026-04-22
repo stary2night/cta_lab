@@ -21,19 +21,22 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from backtest.costs import ProportionalCostModel
 from backtest.result import BacktestResult
 from backtest.vectorized import VectorizedBacktest
 from portfolio.sizing.corr_cap import CorrCapSizer
 from strategies.base.strategy import StrategyBase
+from strategies.context import StrategyContext
 
 from .config import (
     CORR_MIN_PERIODS,
     CORR_WINDOW,
+    JPMConfig,
     SIGMA_HALFLIFE,
     TARGET_VOL,
     TRADING_DAYS,
     VOL_HALFLIFE,
-    default_config,
+    coerce_config,
 )
 
 
@@ -49,6 +52,8 @@ class JPMRunResult:
     pnl_baseline: pd.Series           # 基准组合 PnL（vol-targeted）
     pnl_corrcap: pd.Series            # CorrCap 组合 PnL（vol-targeted）
     sector_map: dict[str, str]        # {symbol: sector}
+    result_baseline: BacktestResult | None = None
+    result_corrcap: BacktestResult | None = None
     metadata: dict = field(default_factory=dict)
 
 
@@ -65,29 +70,33 @@ class JPMTrendStrategy(StrategyBase):
     Parameters
     ----------
     config:
-        策略配置字典，可覆盖 config.default_config() 中的任意字段。
+        策略配置对象或配置字典。
     data_dir:
         china_daily_full/ 数据目录路径。
     """
 
     def __init__(
         self,
-        config: dict | None = None,
+        config: JPMConfig | dict | None = None,
         data_dir: str | Path | None = None,
     ) -> None:
-        merged = {**default_config(), **(config or {})}
-        super().__init__(merged)
+        typed_config = coerce_config(config)
+        super().__init__(typed_config.to_dict())
 
-        self.lookbacks: list[int] = merged["lookbacks"]
-        self.min_obs: int = merged["min_obs"]
-        self.vol_halflife: int = merged["vol_halflife"]
-        self.sigma_halflife: int = merged["sigma_halflife"]
-        self.target_vol: float = merged["target_vol"]
-        self.trading_days: int = merged["trading_days"]
-        self.corr_window: int = merged["corr_window"]
-        self.corr_min_periods: int = merged["corr_min_periods"]
-        self.corr_cap: float = merged["corr_cap"]
-        self.sector_map: dict[str, str] = merged["sector_map"]
+        self.typed_config = typed_config
+        self.lookbacks: list[int] = typed_config.lookbacks
+        self.min_obs: int = typed_config.min_obs
+        self.vol_halflife: int = typed_config.vol_halflife
+        self.sigma_halflife: int = typed_config.sigma_halflife
+        self.target_vol: float = typed_config.target_vol
+        self.trading_days: int = typed_config.trading_days
+        self.corr_window: int = typed_config.corr_window
+        self.corr_min_periods: int = typed_config.corr_min_periods
+        self.corr_cap: float = typed_config.corr_cap
+        self.transaction_cost_bps: float = typed_config.transaction_cost_bps
+        self.transaction_cost_rate: float = self.transaction_cost_bps / 10_000.0
+        self.exclude: set[str] = set(typed_config.exclude)
+        self.sector_map: dict[str, str] = dict(typed_config.sector_map)
 
         self._data_dir: Path | None = Path(data_dir) if data_dir else None
 
@@ -196,12 +205,44 @@ class JPMTrendStrategy(StrategyBase):
             vol_target=self.target_vol,
             vol_halflife=self.vol_halflife,
             trading_days=self.trading_days,
+            cost_model=ProportionalCostModel(self.transaction_cost_rate),
         )
+
+    @staticmethod
+    def _make_corrcap_backtest(base_backtest: VectorizedBacktest) -> VectorizedBacktest:
+        """构造 CorrCap 专用回测器。
+
+        CorrCapSizer 已经按目标波动率缩放权重；这里保留执行延迟和成本模型，
+        但关闭组合层二次 vol-targeting，避免早期样本下有效杠杆被重复放大。
+        """
+        return VectorizedBacktest(
+            lag=base_backtest.lag,
+            vol_target=None,
+            vol_halflife=base_backtest.vol_halflife,
+            vol_min_periods=base_backtest.vol_min_periods,
+            trading_days=base_backtest.trading_days,
+            fee_rate=base_backtest.fee_rate,
+            cost_model=base_backtest.cost_model,
+            trim_inactive=base_backtest.trim_inactive,
+        )
+
+    def resolve_sector_map(
+        self,
+        symbols: list[str] | pd.Index,
+        context: StrategyContext | None = None,
+        sector_map: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """将 symbol 列表映射到板块；缺失项归入 Other。"""
+        if context is not None:
+            return context.resolve_sector_map(symbols, sector_map=sector_map)
+        base = sector_map if sector_map is not None else self.sector_map
+        return {str(symbol): base.get(str(symbol), "Other") for symbol in symbols}
 
     # ── 端到端流水线 ──────────────────────────────────────────────────────────
 
     def run_pipeline(
         self,
+        context: StrategyContext | None = None,
         data_dir: str | Path | None = None,
         tickers: list[str] | None = None,
         compute_corrcap: bool = True,
@@ -228,20 +269,32 @@ class JPMTrendStrategy(StrategyBase):
         -------
         JPMRunResult
         """
-        from .data_loader import JPMChinaDataLoader
-
-        # 1. 加载数据
-        d = Path(data_dir) if data_dir else self._data_dir
-        if d is None:
-            raise ValueError("data_dir must be provided via constructor or run_pipeline()")
-
         if verbose:
             print("=" * 65)
             print("Step 1: Load china_daily_full returns")
             print("=" * 65)
 
-        loader = JPMChinaDataLoader(d, min_obs=self.min_obs)
-        returns = loader.load_returns(tickers=tickers, verbose=verbose)
+        if context is not None:
+            returns = context.load_returns_matrix(
+                tickers=tickers,
+                min_obs=self.min_obs,
+                exclude=self.exclude,
+            )
+        else:
+            from data.loader import DataLoader, KlineSchema
+            from data.sources.parquet_source import ParquetSource
+
+            d = Path(data_dir) if data_dir else self._data_dir
+            if d is None:
+                raise ValueError("data_dir must be provided via constructor or run_pipeline()")
+
+            loader = DataLoader(
+                kline_source=ParquetSource(d),
+                kline_schema=KlineSchema.tushare(),
+            )
+            if tickers is None:
+                tickers = loader.available_symbols(exclude=self.exclude)
+            returns = loader.load_returns_matrix(tickers, min_obs=self.min_obs)
 
         if returns.empty:
             raise RuntimeError("No returns loaded. Check data_dir and tickers.")
@@ -294,12 +347,13 @@ class JPMTrendStrategy(StrategyBase):
             print("Step 4: VectorizedBacktest — vol-targeted PnL")
             print("=" * 65)
 
-        bt = self._make_backtest()
+        bt = context.backtest if context is not None and context.backtest is not None else self._make_backtest()
         result_baseline = bt.run(baseline_pos, returns)
         pnl_baseline = result_baseline.returns.iloc[1:]   # 去掉起始 0.0
 
         if compute_corrcap:
-            result_corrcap = bt.run(corrcap_pos, returns)
+            cc_bt = self._make_corrcap_backtest(bt)
+            result_corrcap = cc_bt.run(corrcap_pos, returns)
             pnl_corrcap = result_corrcap.returns.iloc[1:]
         else:
             pnl_corrcap = pd.Series(dtype=float)
@@ -309,7 +363,7 @@ class JPMTrendStrategy(StrategyBase):
             if compute_corrcap:
                 self._print_summary(pnl_corrcap, "CorrCap-0.25")
 
-        sym_sector = {t: self.sector_map.get(t, "Other") for t in returns.columns}
+        sym_sector = self.resolve_sector_map(returns.columns, context=context)
 
         return JPMRunResult(
             returns=returns,
@@ -319,6 +373,8 @@ class JPMTrendStrategy(StrategyBase):
             corrcap_pos=corrcap_pos,
             pnl_baseline=pnl_baseline,
             pnl_corrcap=pnl_corrcap,
+            result_baseline=result_baseline,
+            result_corrcap=result_corrcap if compute_corrcap else None,
             sector_map=sym_sector,
             metadata={
                 "lookbacks": self.lookbacks,
@@ -362,6 +418,7 @@ class JPMTrendStrategy(StrategyBase):
                 raise ValueError("engine is required when using StrategyBase.run path")
             return super().run(price_df, adjust_dates or set(), engine)
         return self.run_pipeline(
+            context=None,
             data_dir=data_dir,
             tickers=tickers,
             compute_corrcap=compute_corrcap,

@@ -1,5 +1,7 @@
 # cta_lab data 数据层设计说明与使用指南
 
+> 最后更新：2026-04-20
+
 ## 一、整体设计思路
 
 ### 为什么要有一个独立的数据层？
@@ -192,6 +194,7 @@ DataLoader 是**唯一对外入口**，做三件事：
 KlineSchema.default()    # 标准列名（data 已预处理）
 KlineSchema.tushare()    # Tushare 原始格式：trade_date, contract_code,
                          # open_price, high_price, … , interest
+KlineSchema.overseas()   # 海外期货格式：daily_{BaseTicker}.parquet + FutContrID
 ```
 
 #### ContractSchema 预置
@@ -239,6 +242,11 @@ loader = DataLoader(
 > 其中 `instrument_source` 优先级最高；若未显式传入，`load_instrument()` 会优先回退到
 > `instruments/{symbol}`，再回退到 `contract_source`（如已配置）。
 > 只做行情分析时，只传 `kline_source` 即可。
+
+DataLoader 当前还提供两个常用批量研究入口：
+
+- `available_symbols()`：列出当前数据源中可用品种
+- `load_returns_matrix()`：直接构造 `dates x symbols` 收益率矩阵
 
 ---
 

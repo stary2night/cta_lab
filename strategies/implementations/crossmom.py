@@ -1,20 +1,13 @@
-"""截面动量策略（跨品种动量轮动）。"""
+"""CrossMOM 兼容入口。
+
+当前正式实现已迁移至 `strategies/implementations/crossmom_backtest/`。
+这个文件保留旧导入路径兼容性。
+"""
 
 from __future__ import annotations
 
-from strategies.base.cross_sectional import CrossSectionalStrategy
+from strategies.implementations.crossmom_backtest.strategy import CrossMOMStrategy
 
 
-class CrossMOM(CrossSectionalStrategy):
-    """截面动量策略（跨品种动量轮动）。"""
-
-    DEFAULT_CONFIG: dict = {
-        "score_lookbacks": [63, 126, 252],
-        "top_pct": 0.30,
-        "bottom_pct": 0.30,
-        "target_vol": 0.40,
-    }
-
-    def __init__(self, config: dict | None = None) -> None:
-        merged = {**self.DEFAULT_CONFIG, **(config or {})}
-        super().__init__(merged)
+class CrossMOM(CrossMOMStrategy):
+    """旧名称兼容别名，指向新的 CrossMOMStrategy。"""

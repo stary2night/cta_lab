@@ -6,6 +6,7 @@ from .sector import SectorDecomposer
 from .crisis import CrisisDecomposer
 from .signal_eval import SignalDecomposer
 from .long_short import LongShortDecomposer
+from .periodic import PeriodicDecomposer
 
 __all__ = [
     "PerformanceDecomposer",
@@ -14,4 +15,5 @@ __all__ = [
     "CrisisDecomposer",
     "SignalDecomposer",
     "LongShortDecomposer",
+    "PeriodicDecomposer",
 ]

@@ -14,6 +14,8 @@ class BacktestResult:
 
     nav: pd.Series            # 每日 NAV，从 1.0 开始，DatetimeIndex
     returns: pd.Series        # 每日收益率（非对数）
+    positions_df: Optional[pd.DataFrame] = field(default=None)   # 执行后持仓矩阵
+    turnover_series: Optional[pd.Series] = field(default=None)   # 每日组合换手
 
     # verbose=True 时额外填充
     holdings_log: Optional[pd.DataFrame] = field(default=None)    # shape: (dates, symbols)，每日权重快照
@@ -26,6 +28,10 @@ class BacktestResult:
             "nav": self.nav,
             "returns": self.returns,
         }
+        if self.positions_df is not None:
+            d["positions_df"] = self.positions_df
+        if self.turnover_series is not None:
+            d["turnover_series"] = self.turnover_series
         if self.holdings_log is not None:
             d["holdings_log"] = self.holdings_log
         if self.fee_log is not None:

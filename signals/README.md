@@ -1,5 +1,7 @@
 # Signals Module
 
+> Last updated: 2026-04-20
+
 `signals/` 是 `cta_lab` 的信号定义层，负责把价格或价格矩阵转换为可研究、可组合的信号序列。
 
 ## 模块职责
@@ -58,6 +60,12 @@ signals/
 └── operators/
 ```
 
+其中 `momentum/` 当前除了传统 TSMOM、Sharpe、Absolute、Percentile 之外，还包含：
+
+- `jpm_tstat.py`
+- `nltsmom.py`
+- `dual_momentum.py`
+
 ## 当前输出语义约定
 
 - 信号输出应为浮点序列/矩阵
@@ -74,10 +82,11 @@ signals/
 - 修复 `PercentileMomentum` 在 ties / 平盘时的系统性偏置
 - 为 `signals/` 补独立测试
 
-## 后续规划
+## 当前实现补充
 
-- `signals/operators/`：lag、smooth、clip、zscore、winsorize、截面 rank、标准化等信号算子
-- `analysis/signal/`：future return 标签、IC/IR、分组收益、轻量因子分析
+- `Signal.compute_matrix(price_matrix)` 已成为矩阵研究的默认入口
+- `DualMomentumSignal` 已提供板块内相对动量 + 绝对动量的截面实现
+- `signals/operators/` 已从规划项变成正式模块
 
 ## Signal S2 Operators
 

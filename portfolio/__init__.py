@@ -3,7 +3,7 @@
 from .sizing import Sizer, EqualRiskSizer, RiskBudgetSizer, CorrCapSizer
 from .constraints import WeightCap, WAF
 from .scheduler import RebalanceRecord, RebalanceScheduler, MonthlyScheduler, StaggeredScheduler
-from .blender import blend
+from .blender import blend, StrategyBlender
 from .selectors import TopBottomSelector, ThresholdSelector
 from . import fx_handler
 
@@ -23,6 +23,7 @@ __all__ = [
     "StaggeredScheduler",
     # blender
     "blend",
+    "StrategyBlender",
     # selectors
     "TopBottomSelector",
     "ThresholdSelector",

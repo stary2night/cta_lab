@@ -1,5 +1,7 @@
 # Portfolio Layer
 
+> Last updated: 2026-04-20
+
 `portfolio/` 负责把已经可定仓的信号矩阵转换为目标权重矩阵。它是 `signals/` 和
 `backtest/` 之间的无状态组合构建层。
 
@@ -14,6 +16,7 @@
 - `sizing/`
   - `EqualRiskSizer`
   - `RiskBudgetSizer`
+  - `CorrCapSizer`
 - `constraints/`
   - `WeightCap`
   - `WAF`
@@ -25,6 +28,11 @@
   - `ThresholdSelector`
 - `blender.py`
 - `fx_handler.py`
+
+其中 `blender.py` 当前同时提供：
+
+- 低层 `blend()`：融合多个子组合权重矩阵
+- 高层 `StrategyBlender`：管理多个策略并统一执行向量化回测
 
 ## 信号输入约定
 
@@ -70,3 +78,9 @@ long / short / flat 仓位意图。
 `blend()` 会把子组合权重对齐到日期并集，并在每个子组合自己的有效日期区间内 `ffill`。
 这样可以保留“再平衡之间持有原权重”的行为，同时避免子组合在最后一个有效日期之后被无限期
 向前延续。实现上会把有效区间外的值显式清零，而不是依赖无限 forward fill。
+
+## 当前实现补充
+
+- `CorrCapSizer` 主要承接 JPM 趋势策略相关性截断定仓
+- `StaggeredScheduler` 用于多子组合错峰调仓
+- `blend()` 和 `StrategyBlender` 让“单策略研究 -> 多策略组合”成为正式路径

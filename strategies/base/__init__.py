@@ -1,11 +1,13 @@
 """strategies/base 公共导出。"""
 
 from .strategy import StrategyBase
-from .trend import TrendFollowingStrategy
+from .vectorized import VectorizedStrategy
 from .cross_sectional import CrossSectionalStrategy
+from .event_driven import EventDrivenStrategy
 
 __all__ = [
     "StrategyBase",
-    "TrendFollowingStrategy",
+    "VectorizedStrategy",
     "CrossSectionalStrategy",
+    "EventDrivenStrategy",
 ]

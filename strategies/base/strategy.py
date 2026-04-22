@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import pandas as pd
+
+from .vectorized import VectorizedStrategy
 
 if TYPE_CHECKING:
     from backtest.engine import BacktestEngine
@@ -14,14 +16,18 @@ if TYPE_CHECKING:
     from backtest.vectorized import VectorizedBacktest
 
 
-class StrategyBase(ABC):
+class StrategyBase(VectorizedStrategy):
     """策略基类：组装层，将 signals/ portfolio/ backtest/ 按策略逻辑组合。
 
-    提供两条回测路径：
-    - run()：事件驱动路径，通过 BacktestEngine 逐日推进状态机，
-      适合稀疏调仓、FX 双轨、VRS 等需要持仓状态机的生产策略。
+    提供两条矩阵型兼容路径：
+    - run()：旧 BacktestEngine 兼容路径，输入 price_df/adjust_dates 后
+      生成权重矩阵，再交给 BacktestEngine 逐日推进持仓状态。
+      这不是 callback/order/broker 风格的 backtest.event 事件驱动范式。
     - run_vectorized()：向量化路径，纯矩阵运算无 Python 循环，
       适合日度信号连续更新的 paper-portfolio 研究模拟。
+
+    新的事件驱动策略应继承 EventDrivenStrategy，并通过
+    run_event_backtest() 接入 EventDrivenBacktestEngine。
     """
 
     def __init__(self, config: dict) -> None:
@@ -51,7 +57,7 @@ class StrategyBase(ABC):
             据此切换至 CorrCapSizer 路径，其余子类忽略此参数。
         """
 
-    # ── 事件驱动路径 ──────────────────────────────────────────────────────────
+    # ── 旧 BacktestEngine 兼容路径 ───────────────────────────────────────────
 
     def run(
         self,
@@ -59,9 +65,12 @@ class StrategyBase(ABC):
         adjust_dates: set[pd.Timestamp],
         engine: "BacktestEngine",
     ) -> "BacktestResult":
-        """事件驱动回测：价格 → 信号 → 权重 → BacktestEngine。
+        """权重矩阵状态推进回测：价格 → 信号 → 权重 → BacktestEngine。
 
-        适用场景：稀疏调仓日（月度/季度）、需要持仓状态机的策略。
+        这条路径保留给旧版 `BacktestEngine` 调用方式，适用场景是已经
+        生成目标权重矩阵、但仍希望按 adjust_dates 逐日推进持仓状态的策略。
+        它不同于 `backtest.event.EventDrivenBacktestEngine` 的
+        callback/order/broker 事件驱动范式。
         """
         returns_df = price_df.pct_change()
         vol_df = returns_df.rolling(20).std() * np.sqrt(252)

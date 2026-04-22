@@ -21,6 +21,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .costs import CostModel
 from .result import BacktestResult
 
 
@@ -58,6 +59,7 @@ class VectorizedBacktest:
         vol_min_periods: Optional[int] = None,
         trading_days: int = 252,
         fee_rate: float = 0.0,
+        cost_model: CostModel | None = None,
         trim_inactive: bool = True,
     ) -> None:
         self.lag = lag
@@ -66,6 +68,7 @@ class VectorizedBacktest:
         self.vol_min_periods = vol_min_periods if vol_min_periods is not None else vol_halflife
         self.trading_days = trading_days
         self.fee_rate = fee_rate
+        self.cost_model = cost_model
         self.trim_inactive = trim_inactive
 
     # ── 公开接口 ──────────────────────────────────────────────────────────────
@@ -96,28 +99,51 @@ class VectorizedBacktest:
         r = returns_df.loc[idx, cols]
 
         # 2. 执行延迟：shift(lag)，前 lag 行填 0
-        w_exec = w.shift(self.lag).fillna(0.0)
+        w_exec_base = w.shift(self.lag).fillna(0.0)
 
-        # 3. 原始 PnL（未含费用）
-        pnl_raw: pd.Series = (w_exec * r.fillna(0.0)).sum(axis=1)
+        # 3. 先用未扣费组合收益估计 vol-targeting scale，再作用到实际执行权重。
+        #    这样交易费用扣在有效暴露变化上，而不是未缩放的原始信号权重上。
+        pnl_gross_unscaled: pd.Series = (w_exec_base * r.fillna(0.0)).sum(axis=1)
+        if self.vol_target is not None:
+            active_exposure = w_exec_base.abs().sum(axis=1) > 0.0
+            pnl_for_scale = pnl_gross_unscaled.where(active_exposure)
+            scale = self._vol_target_scale(pnl_for_scale)
+            w_exec = w_exec_base.mul(scale, axis=0)
+            pnl_gross = pnl_gross_unscaled * scale
+        else:
+            w_exec = w_exec_base
+            pnl_gross = pnl_gross_unscaled
 
-        # 4. 换手费用（若 fee_rate > 0）
-        if self.fee_rate > 0.0:
-            turnover = w.diff().abs().sum(axis=1)
-            fees = (self.fee_rate * turnover).shift(self.lag).fillna(0.0)
+        turnover = w_exec.diff().fillna(w_exec).abs().sum(axis=1)
+        turnover.name = "turnover"
+        pnl_raw = pnl_gross.copy()
+
+        # 4. 换手费用（cost_model 优先；fee_rate 保留为兼容入口）
+        if self.cost_model is not None:
+            fees = turnover.apply(lambda x: self.cost_model.turnover_cost(float(x))).fillna(0.0)
+            daily_cost = pd.Series(
+                [self.cost_model.daily_return_cost(timestamp=t) for t in turnover.index],
+                index=turnover.index,
+            )
+            pnl_raw = pnl_raw - fees - daily_cost.loc[pnl_raw.index].fillna(0.0)
+        elif self.fee_rate > 0.0:
+            fees = (self.fee_rate * turnover).fillna(0.0)
             pnl_raw = pnl_raw - fees
 
         # 5. 截断非活跃前缀
+        active_start = None
         if self.trim_inactive:
             first_active_mask = pnl_raw.abs() > 0
             if first_active_mask.any():
-                pnl_raw = pnl_raw.loc[first_active_mask.idxmax():]
+                active_start = first_active_mask.idxmax()
+                pnl_raw = pnl_raw.loc[active_start:]
 
-        # 6. EWMA vol-targeting（组合层面事后定标）
-        if self.vol_target is not None:
-            pnl_returns = self._apply_vol_targeting(pnl_raw)
-        else:
-            pnl_returns = pnl_raw
+        if active_start is not None:
+            w_exec = w_exec.loc[active_start:]
+            turnover = turnover.loc[active_start:]
+
+        # 6. 已在有效执行权重层面完成 vol-targeting。
+        pnl_returns = pnl_raw
 
         # 7. 构建 NAV（从 1.0 开始）
         nav = (1.0 + pnl_returns).cumprod()
@@ -128,8 +154,14 @@ class VectorizedBacktest:
 
         nav.name = "nav"
         ret_with_start.name = "returns"
+        turnover.name = "turnover"
 
-        return BacktestResult(nav=nav, returns=ret_with_start)
+        return BacktestResult(
+            nav=nav,
+            returns=ret_with_start,
+            positions_df=w_exec,
+            turnover_series=turnover,
+        )
 
     # ── 内部方法 ──────────────────────────────────────────────────────────────
 
@@ -138,8 +170,15 @@ class VectorizedBacktest:
 
         定标规则：scale[t] = vol_target / ewma_vol[t-1]
         ewma_vol 以 PnL 的 EWMA 标准差乘以 sqrt(trading_days) 年化。
-        scale 的前导 NaN 用第一个有效值回填，确保全序列有定标系数。
+        scale 在热身完成前为 0，避免用未来波动率或未建仓期零收益放大初始仓位。
         """
+        return pnl * self._vol_target_scale(pnl)
+
+    def _vol_target_scale(self, pnl: pd.Series) -> pd.Series:
+        """返回 EWMA vol-targeting 的日度暴露缩放系数。"""
+        if self.vol_target is None:
+            return pd.Series(1.0, index=pnl.index)
+
         ann_factor = np.sqrt(self.trading_days)
         ewma_vol = (
             pnl.ewm(halflife=self.vol_halflife, min_periods=self.vol_min_periods)
@@ -149,10 +188,4 @@ class VectorizedBacktest:
         scale = (self.vol_target / ewma_vol.shift(1)).replace(
             [np.inf, -np.inf], np.nan
         )
-        # 前导 NaN 用首个有效值回填（保持初期定标稳定）
-        first_valid = scale.first_valid_index()
-        if first_valid is not None:
-            scale = scale.ffill()
-            scale.loc[:first_valid] = scale.loc[first_valid]
-
-        return pnl * scale.fillna(1.0)
+        return scale.ffill().fillna(0.0)

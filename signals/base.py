@@ -18,6 +18,26 @@ class Signal(ABC):
             - 少数方向型信号（如 TSMOM）可直接输出 -1/0/+1
         """
 
+    def compute_matrix(self, price_matrix: pd.DataFrame) -> pd.DataFrame:
+        """对价格矩阵逐列调用 compute()，返回信号矩阵。
+
+        默认实现：将 compute() 逐列（品种）应用，聚合为 DataFrame。
+        子类若有截面依赖可重写此方法。
+
+        Parameters
+        ----------
+        price_matrix:
+            shape=(dates, symbols) 的价格矩阵。
+
+        Returns
+        -------
+        shape=(dates, symbols) 的信号矩阵。
+        """
+        return pd.DataFrame(
+            {col: self.compute(price_matrix[col]) for col in price_matrix.columns},
+            index=price_matrix.index,
+        )
+
     def to_direction(self, prices: pd.Series) -> pd.Series:
         """将连续信号离散化为 {-1, 0, +1}。"""
         return np.sign(self.compute(prices))

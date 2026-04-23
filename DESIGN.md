@@ -1,6 +1,6 @@
 # cta_lab 系统设计文档
 
-> 最后更新：2026-04-21
+> 最后更新：2026-04-23
 
 `cta_lab` 当前已经形成一套可复用的 CTA 研究框架，目标是用统一分层承接：
 
@@ -66,7 +66,7 @@ cta_lab/
 
 当前目录职责：
 
-- `momentum/`：TSMOM、Sharpe、Absolute、Percentile、NLTSMOM、JPM t-stat、Dual Momentum
+- `momentum/`：TSMOM、Sharpe、Absolute、Percentile、NLTSMOM、JPM t-stat、Dual Momentum、MultiFactorTrend、MultiFactorCrossSectionalMomentum
 - `reversal/`：MASS260Reversal
 - `risk/`：TVS
 - `composite/`：`LinearCombiner`、`RankCombiner`
@@ -193,6 +193,7 @@ cta_lab/
 - `tsmom_backtest/`
 - `dual_momentum_backtest/`
 - `jpm_trend_trade/`
+- `multifactor_cta_backtest/`
 - `overseas_backtest/`
 - `gmat3/`
 
@@ -201,7 +202,8 @@ cta_lab/
 - `jpm_trend_trade/` 是较完整的趋势策略目录化实现
 - `jpm_trend_trade/event_strategy.py` 已提供 `JPMEventDrivenStrategy`，作为正式策略包中的事件驱动样板；它在 `on_start()` 中预计算 JPM t-stat 信号、sigma 与 CorrCap rolling cache 等市场特征，在 `on_bar()` 中只读取当天特征并生成订单，避免每日重复滚动计算，同时通过 `EventDrivenBacktestEngine` 生成订单与持仓状态；`JPMConfig.transaction_cost_bps` 提供策略默认交易成本，`scripts/run_jpm_event.py` 已支持 `--commission-bps` 与 `--slippage-bps`
 - `jpm_trend_trade/` 的向量化 baseline 使用组合层 `vol_target`；CorrCap 路径由 `CorrCapSizer` 在定仓阶段完成目标波动缩放，回测阶段只保留执行延迟和成本扣减，避免二次 vol-target 放大早期有效杠杆
-- 典型向量化策略入口已统一接入交易成本参数和报告输出：`run_crossmom.py`、`run_dual_momentum.py`、`run_jpm.py`、`run_overseas.py`、`run_tsmom.py` 支持 `--cost-bps`，并输出 `turnover_cost*.csv` 与带换手/成本字段的 `full_sample_summary.csv`；其中 `run_jpm.py` 已直接使用回测结果中的有效换手，保持净值扣费与报告成本口径一致
+- `multifactor_cta_backtest/` 是吸收全球商品 CTA 组合设计思想的中国期货多因子样板：使用 `MultiFactorTrendSignal` 七因子时序趋势、`MultiFactorCrossSectionalMomentumSignal` 四因子板块内截面动量；策略已从早期 signal-blend 改为 sleeve-blend，趋势 sleeve 独立做 inverse-vol sizing、单品种权重上限和 gross exposure 上限，截面动量 sleeve 默认做四因子行业内多空等权组合，并保留 `cross_weighting="sector_inverse_vol"` 的行业中性 sleeve 风险预算实验分支，组合层再按 `trend_weight/cross_weight` 混合持仓并统一回测、波控和扣费；截面动量在预热期不足时不参与行业排名，避免前导零值形成假多空信号；`scripts/run_multifactor_cta.py` 负责中国期货 CLI、`--start/--end` 区间控制、成本报告和图表输出，`scripts/run_multifactor_cta_global.py` 负责将国内和境外期货合并为全局品种池后的 1/2 趋势 + 1/2 截面动量组合实验
+- 典型向量化策略入口已统一接入交易成本参数和报告输出：`run_crossmom.py`、`run_dual_momentum.py`、`run_jpm.py`、`run_multifactor_cta.py`、`run_overseas.py`、`run_tsmom.py` 支持 `--cost-bps`，并输出 `turnover_cost*.csv` 与带换手/成本字段的 `full_sample_summary.csv`；其中 `run_jpm.py` 已直接使用回测结果中的有效换手，保持净值扣费与报告成本口径一致
 - `overseas_backtest/` 已收口为 `OverseasTrendSuite`，用于在海外期货 universe 上并行运行 JPM t-stat、TSMOM 与 Dual Momentum 三条趋势/动量研究路径；`scripts/run_overseas.py` 只负责 CLI 与报告输出
 - `gmat3/` 是最复杂的复合策略子系统，已形成独立的 `data_access / main_contract / roll_return / sub_portfolio / signals / weights / index_builder / strategy` 链路
 - `strategies/context.py` 已新增共享 `StrategyContext`，用于承接策略运行时依赖；`crossmom_backtest/` 作为样板率先切换到这条路径，并已补齐轻量 `run_pipeline`，`tsmom_backtest/`、`dual_momentum_backtest/`、`jpm_trend_trade/` 也已接入共享 context 读取数据与注入默认回测器；收益率矩阵加载支持 `start/end` 透传，便于脚本层做短区间 smoke test

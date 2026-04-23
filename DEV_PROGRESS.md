@@ -1,6 +1,6 @@
 # cta_lab 开发进展记录
 
-> 最后更新：2026-04-22
+> 最后更新：2026-04-23
 
 `cta_lab` 当前已经从“合并 `cta` 与 `ddb` 的搭框架阶段”进入“平台收口与策略扩展并行阶段”。完整架构设计见 [DESIGN.md](DESIGN.md)。
 
@@ -38,7 +38,7 @@
 ### 2. 信号层
 
 - 已形成 `Signal` / `CrossSectionalSignal` 顶层抽象
-- 动量类已覆盖 TSMOM、Sharpe、Absolute、Percentile、NLTSMOM、JPM t-stat、Dual Momentum
+- 动量类已覆盖 TSMOM、Sharpe、Absolute、Percentile、NLTSMOM、JPM t-stat、Dual Momentum、MultiFactorTrend、MultiFactorCrossSectionalMomentum
 - 风险与反转信号已包含 TVS、MASS260
 - `signals/operators/` 已成为正式研究辅助层，而不是临时工具函数
 
@@ -55,7 +55,7 @@
 - `backtest/event/` 第三阶段已加入 `TargetWeightStrategyAdapter`，可把现有 `weights_df` 作为事件驱动策略运行；新增测试已验证 `lag=0`、`fee=0`、每日权重口径下可与 `VectorizedBacktest` 对齐
 - `backtest/event/` 第四阶段已支持 adapter 级 `execution_lag` 与稀疏调仓日期；`EventRecorder` 的 turnover 已改为基于真实成交 notional 记录，避免把非调仓日权重漂移误记为换手；新增测试已验证稀疏调仓漂移、延迟执行和 close-to-close 调仓对齐 `VectorizedBacktest(lag=1)`
 - 回测层已新增统一轻量成本和滑点模型：`backtest/costs.py` 提供 `ZeroCostModel`、`ProportionalCostModel`、`DailyAccrualCostModel`、`CompositeCostModel`，`backtest/slippage.py` 提供 `NoSlippage` 与 `FixedBpsSlippage`；`VectorizedBacktest` 和 `EventDrivenBacktestEngine` 均已接入 `cost_model`，事件 broker 额外支持 `slippage_model`；向量化路径启用 `vol_target` 时已改为按 vol-target 后的有效执行权重计算换手和成本，并且 vol-target 热身期不再向前回填 scale
-- 典型策略运行入口已开始统一交易成本与换手报告：`run_crossmom.py`、`run_dual_momentum.py`、`run_jpm.py`、`run_overseas.py`、`run_tsmom.py` 支持 `--cost-bps` 并输出 `turnover_cost*.csv`，`full_sample_summary.csv` 中增加平均换手、年化换手、总成本和年化成本拖累；`JPMConfig.transaction_cost_bps` 已作为 JPM 策略默认成本来源，`run_jpm.py` 与 `run_jpm_event.py` 在未显式传入成本参数时回退到该配置，且 `run_jpm.py` 的成本报告已改用回测结果中的有效换手
+- 典型策略运行入口已开始统一交易成本与换手报告：`run_crossmom.py`、`run_dual_momentum.py`、`run_jpm.py`、`run_multifactor_cta.py`、`run_overseas.py`、`run_tsmom.py` 支持 `--cost-bps` 并输出 `turnover_cost*.csv`，`full_sample_summary.csv` 中增加平均换手、年化换手、总成本和年化成本拖累；`JPMConfig.transaction_cost_bps` 已作为 JPM 策略默认成本来源，`run_jpm.py` 与 `run_jpm_event.py` 在未显式传入成本参数时回退到该配置，且 `run_jpm.py` 的成本报告已改用回测结果中的有效换手
 - 第五阶段已把事件驱动范式接入策略层：`strategies/base/vectorized.py` 新增 `VectorizedStrategy`，`EventDrivenStrategy` 新增 `run_event_backtest(...)`，`strategies/examples/` 新增 `SimpleRelativeMomentumEventStrategy`，事件驱动 notebook 已改为从策略层导入样板策略
 - 策略基类继承关系已进一步收口：`StrategyBase` 继承 `VectorizedStrategy`；`crossmom_backtest.CrossMOMStrategy` 与 `dual_momentum_backtest.DualMomentumStrategy` 已补充继承 `StrategyBase`，并覆盖收益率矩阵口径的 `run_vectorized()`
 - `StrategyBase.run()` 保留为旧 `BacktestEngine` 权重矩阵状态推进兼容入口；新的 callback/order/broker 事件驱动范式统一走 `EventDrivenStrategy.run_event_backtest(...)`
@@ -77,12 +77,14 @@
 - `tsmom_backtest/`
 - `dual_momentum_backtest/`
 - `jpm_trend_trade/`
+- `multifactor_cta_backtest/`
 - `overseas_backtest/`
 - `gmat3/`
 
 其中值得单独记录的有：
 
 - `jpm_trend_trade/`：JPM t-stat + CorrCap 路径完整落地，并新增事件驱动版本 `JPMEventDrivenStrategy`；事件驱动版可通过 `scripts/run_jpm_event.py` 运行 baseline、CorrCap 或两者对比，脚本支持 `--start/--end` 做短区间事件回测 smoke test，也支持交易成本与固定 bps 滑点参数；向量化与事件驱动入口均已接入 `JPMConfig.transaction_cost_bps` 默认成本配置；向量化 CorrCap 路径已关闭回测阶段二次 vol-targeting，避免与 `CorrCapSizer` 的目标波动缩放重复
+- `multifactor_cta_backtest/`：新增中国期货多因子 CTA 第一版，组合 `MultiFactorTrendSignal` 七因子趋势和 `MultiFactorCrossSectionalMomentumSignal` 四因子板块内截面动量；策略已升级为 sleeve-blend，趋势 sleeve 独立做 inverse-vol sizing 与单品种/gross 上限，截面动量 sleeve 默认做四因子行业内多空等权组合，并保留 `sector_inverse_vol` 行业中性 sleeve 风险预算实验分支，组合层按 `trend_weight/cross_weight` 混合持仓后统一回测、波控和扣费；截面动量已修正预热期行为，预热不足时不参与行业排名，避免前导零值形成假多空信号；`scripts/run_multifactor_cta.py` 是中国期货运行入口，`scripts/run_multifactor_cta_global.py` 是国内 + 境外期货全局品种池运行入口，均支持 `--start/--end` 区间控制
 - `overseas_backtest/`：海外趋势对比研究已收口为 `OverseasTrendSuite`，策略包承接 JPM t-stat、TSMOM、Dual Momentum 三条研究路径的信号、定仓与回测，`scripts/run_overseas.py` 保留为 CLI 与输出入口
 - `gmat3/`：已形成从数据接入到指数合成的完整目录化实现
 - `crossmom_backtest/`：已完成第一版样板试验，并把包内 `context` 上提为框架级 `strategies/context.py`；当前通过共享 `StrategyContext` 集成核心依赖，策略包已补齐轻量 `run_pipeline`，`scripts/run_crossmom.py` 只负责 CLI 与输出。`tsmom_backtest/`、`dual_momentum_backtest/`、`jpm_trend_trade/` 也已同步接入共享 context 路径，对应入口脚本现已统一使用同一套 `StrategyContext`

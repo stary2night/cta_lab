@@ -1,6 +1,6 @@
 # Signals Module
 
-> Last updated: 2026-04-20
+> Last updated: 2026-04-23
 
 `signals/` 是 `cta_lab` 的信号定义层，负责把价格或价格矩阵转换为可研究、可组合的信号序列。
 
@@ -65,6 +65,8 @@ signals/
 - `jpm_tstat.py`
 - `nltsmom.py`
 - `dual_momentum.py`
+- `multifactor_trend.py`
+- `multifactor_crossmom.py`
 
 ## 当前输出语义约定
 
@@ -86,6 +88,8 @@ signals/
 
 - `Signal.compute_matrix(price_matrix)` 已成为矩阵研究的默认入口
 - `DualMomentumSignal` 已提供板块内相对动量 + 绝对动量的截面实现
+- `MultiFactorTrendSignal` 已提供商品 CTA 风格七因子趋势信号，覆盖长周期累计收益、价格突破、收益均值突破和长短均值残差等趋势维度
+- `MultiFactorCrossSectionalMomentumSignal` 已提供商品 CTA 风格四因子截面动量信号，在行业内按数量选择 top/bottom 分位并合成方向强度；预热期不足的因子值保持缺失，不参与截面排名，避免把前导零值误当成有效信号；同时提供四因子多空等权 portfolio weights，用于策略层按 sleeve 方式组合，并保留行业中性 sleeve inverse-vol 加权的实验分支
 - `signals/operators/` 已从规划项变成正式模块
 
 ## Signal S2 Operators

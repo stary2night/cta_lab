@@ -4,6 +4,11 @@ from .crossmom import CrossMOM
 from .crossmom_backtest import CrossMOMConfig, CrossMOMRunResult, CrossMOMStrategy
 from .gmat3 import GMAT3Strategy
 from .jpm_trend_trade import JPMTrendStrategy, JPMRunResult
+from .multifactor_cta_backtest import (
+    MultiFactorCTAConfig,
+    MultiFactorCTARunResult,
+    MultiFactorCTAStrategy,
+)
 
 __all__ = [
     "CrossMOM",
@@ -13,4 +18,7 @@ __all__ = [
     "GMAT3Strategy",
     "JPMTrendStrategy",
     "JPMRunResult",
+    "MultiFactorCTAConfig",
+    "MultiFactorCTARunResult",
+    "MultiFactorCTAStrategy",
 ]

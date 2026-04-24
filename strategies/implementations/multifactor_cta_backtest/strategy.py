@@ -138,6 +138,8 @@ class MultiFactorCTAStrategy(StrategyBase):
         )
         if self.cross_weighting == "global_equal":
             positions = signal.compute_factor_portfolio_weights(returns_df)
+        elif self.cross_weighting == "global_inv_vol":
+            positions = signal.compute_factor_portfolio_weights(returns_df, inv_vol_weighting=True)
         elif self.cross_weighting == "sector_inverse_vol":
             positions = signal.compute_sector_inverse_vol_portfolio_weights(
                 returns_df,

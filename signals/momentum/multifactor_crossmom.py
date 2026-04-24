@@ -69,19 +69,34 @@ class MultiFactorCrossSectionalMomentumSignal(CrossSectionalSignal):
         combined = sum(ranked) / len(ranked)  # type: ignore[arg-type]
         return combined.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-    def compute_factor_portfolio_weights(self, returns_df: pd.DataFrame) -> pd.DataFrame:
-        """Build an equal-weight long/short portfolio for each factor, then average.
+    def compute_factor_portfolio_weights(
+        self,
+        returns_df: pd.DataFrame,
+        inv_vol_weighting: bool = False,
+    ) -> pd.DataFrame:
+        """Build long/short portfolio for each factor, then average.
 
         Each raw factor first selects top/bottom buckets within sectors. The
         selected long leg is normalized to +0.5 and the short leg to -0.5 at
         the factor level, preserving the document-style dollar-neutral sleeve.
         The final cross-sectional momentum sleeve is the equal-weight average
         of the four factor portfolios.
+
+        When inv_vol_weighting=True, weights within each long/short bucket are
+        proportional to inverse realized volatility (rolling vol_window std)
+        instead of equal-weight.
         """
+
+        vol_df: pd.DataFrame | None = None
+        if inv_vol_weighting:
+            vol_df = returns_df.rolling(
+                self.vol_window, min_periods=max(self.vol_window // 2, 1)
+            ).std()
 
         factor_positions = [
             self._signal_to_dollar_neutral_weights(
-                self._rank_factor_within_sector(factor).fillna(0.0)
+                self._rank_factor_within_sector(factor).fillna(0.0),
+                vol_df=vol_df,
             )
             for factor in self.factor_dict(returns_df).values()
         ]
@@ -141,13 +156,29 @@ class MultiFactorCrossSectionalMomentumSignal(CrossSectionalSignal):
         return {name: factor.mask(warmup_mask) for name, factor in factors.items()}
 
     @staticmethod
-    def _signal_to_dollar_neutral_weights(signal: pd.DataFrame) -> pd.DataFrame:
+    def _signal_to_dollar_neutral_weights(
+        signal: pd.DataFrame,
+        vol_df: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
         long_mask = signal > 0
         short_mask = signal < 0
-        n_long = long_mask.sum(axis=1).replace(0, np.nan)
-        n_short = short_mask.sum(axis=1).replace(0, np.nan)
-        long_weights = long_mask.astype(float).div(n_long, axis=0).fillna(0.0) * 0.5
-        short_weights = short_mask.astype(float).div(n_short, axis=0).fillna(0.0) * -0.5
+
+        if vol_df is not None:
+            inv_vol = (1.0 / vol_df.reindex_like(signal).replace(0, np.nan)).replace(
+                [np.inf, -np.inf], np.nan
+            )
+            long_inv = inv_vol.where(long_mask, 0.0)
+            short_inv = inv_vol.where(short_mask, 0.0)
+            long_sum = long_inv.sum(axis=1).replace(0, np.nan)
+            short_sum = short_inv.sum(axis=1).replace(0, np.nan)
+            long_weights = long_inv.div(long_sum, axis=0).fillna(0.0) * 0.5
+            short_weights = short_inv.div(short_sum, axis=0).fillna(0.0) * -0.5
+        else:
+            n_long = long_mask.sum(axis=1).replace(0, np.nan)
+            n_short = short_mask.sum(axis=1).replace(0, np.nan)
+            long_weights = long_mask.astype(float).div(n_long, axis=0).fillna(0.0) * 0.5
+            short_weights = short_mask.astype(float).div(n_short, axis=0).fillna(0.0) * -0.5
+
         return (long_weights + short_weights).fillna(0.0)
 
     def _sector_inverse_vol_weights(

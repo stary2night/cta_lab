@@ -41,6 +41,52 @@ class StrategyContext:
         symbols = tickers if tickers is not None else self.available_symbols(exclude=exclude)
         return self.loader.load_returns_matrix(symbols, start=start, end=end, min_obs=min_obs)
 
+    def load_continuous_field_matrix(
+        self,
+        *,
+        field_name: str,
+        tickers: list[str] | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        exclude: set[str] | None = None,
+        stability_days: int = 1,
+    ) -> pd.DataFrame:
+        """通过统一 DataLoader 读取连续主力字段宽表。"""
+        symbols = tickers if tickers is not None else self.available_symbols(exclude=exclude)
+        return self.loader.load_continuous_field_matrix(
+            symbols,
+            field_name=field_name,
+            start=start,
+            end=end,
+            stability_days=stability_days,
+        )
+
+    def load_continuous_field_returns_matrix(
+        self,
+        *,
+        field_name: str,
+        tickers: list[str] | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        exclude: set[str] | None = None,
+        stability_days: int = 1,
+        zero_on_roll: bool = True,
+        clip_abs_return: float | None = 0.5,
+        min_obs: int = 0,
+    ) -> pd.DataFrame:
+        """通过统一 DataLoader 读取连续主力字段收益率宽表。"""
+        symbols = tickers if tickers is not None else self.available_symbols(exclude=exclude)
+        return self.loader.load_continuous_field_returns_matrix(
+            symbols,
+            field_name=field_name,
+            start=start,
+            end=end,
+            stability_days=stability_days,
+            zero_on_roll=zero_on_roll,
+            clip_abs_return=clip_abs_return,
+            min_obs=min_obs,
+        )
+
     def resolve_sector_map(
         self,
         symbols: list[str] | pd.Index,

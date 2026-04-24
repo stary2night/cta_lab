@@ -95,8 +95,8 @@ class MultiFactorCTAConfig:
             raise ValueError("cross_short_mean_window must be > 1")
         if self.cross_vol_window <= 1:
             raise ValueError("cross_vol_window must be > 1")
-        if self.cross_weighting not in {"global_equal", "sector_inverse_vol"}:
-            raise ValueError("cross_weighting must be global_equal/sector_inverse_vol")
+        if self.cross_weighting not in {"global_equal", "global_inv_vol", "sector_inverse_vol"}:
+            raise ValueError("cross_weighting must be global_equal/global_inv_vol/sector_inverse_vol")
         if self.cross_sector_vol_halflife <= 0:
             raise ValueError("cross_sector_vol_halflife must be > 0")
         if self.trend_weight < 0 or self.cross_weight < 0:

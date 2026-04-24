@@ -9,6 +9,11 @@ from .multifactor_cta_backtest import (
     MultiFactorCTARunResult,
     MultiFactorCTAStrategy,
 )
+from .skew_reversal_backtest import (
+    SkewReversalConfig,
+    SkewReversalRunResult,
+    SkewReversalStrategy,
+)
 
 __all__ = [
     "CrossMOM",
@@ -21,4 +26,7 @@ __all__ = [
     "MultiFactorCTAConfig",
     "MultiFactorCTARunResult",
     "MultiFactorCTAStrategy",
+    "SkewReversalConfig",
+    "SkewReversalRunResult",
+    "SkewReversalStrategy",
 ]

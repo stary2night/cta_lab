@@ -61,6 +61,8 @@ class VectorizedBacktest:
         fee_rate: float = 0.0,
         cost_model: CostModel | None = None,
         trim_inactive: bool = True,
+        max_abs_weight: Optional[float] = None,
+        max_gross_exposure: Optional[float] = None,
     ) -> None:
         self.lag = lag
         self.vol_target = vol_target
@@ -70,6 +72,8 @@ class VectorizedBacktest:
         self.fee_rate = fee_rate
         self.cost_model = cost_model
         self.trim_inactive = trim_inactive
+        self.max_abs_weight = max_abs_weight
+        self.max_gross_exposure = max_gross_exposure
 
     # ── 公开接口 ──────────────────────────────────────────────────────────────
 
@@ -109,10 +113,18 @@ class VectorizedBacktest:
             pnl_for_scale = pnl_gross_unscaled.where(active_exposure)
             scale = self._vol_target_scale(pnl_for_scale)
             w_exec = w_exec_base.mul(scale, axis=0)
-            pnl_gross = pnl_gross_unscaled * scale
         else:
             w_exec = w_exec_base
-            pnl_gross = pnl_gross_unscaled
+
+        # 持仓约束（vol-targeting 缩放之后应用）
+        if self.max_abs_weight is not None:
+            w_exec = w_exec.clip(lower=-self.max_abs_weight, upper=self.max_abs_weight)
+        if self.max_gross_exposure is not None:
+            gross = w_exec.abs().sum(axis=1)
+            scale_gross = (self.max_gross_exposure / gross).clip(upper=1.0)
+            w_exec = w_exec.mul(scale_gross, axis=0)
+
+        pnl_gross = (w_exec * r.fillna(0.0)).sum(axis=1)
 
         turnover = w_exec.diff().fillna(w_exec).abs().sum(axis=1)
         turnover.name = "turnover"

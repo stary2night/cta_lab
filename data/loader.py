@@ -692,6 +692,270 @@ class DataLoader:
         self._set_cached(cache_key, result)
         return result
 
+    def load_continuous_field_series(
+        self,
+        symbol: str,
+        field_name: str,
+        start: str | None = None,
+        end: str | None = None,
+        stability_days: int = 1,
+    ) -> pd.Series:
+        """加载连续主力路径下某个标准字段的逐日序列。
+
+        当前用于研究层补充 close / settle / open_interest 等字段矩阵。
+        字段值沿 ``load_continuous()`` 使用的主力 schedule 回溯到对应合约日线。
+        """
+        cache_key = (
+            "load_continuous_field_series",
+            symbol,
+            field_name,
+            start,
+            end,
+            stability_days,
+        )
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        standard_cols = {"open", "high", "low", "close", "settle", "volume", "open_interest"}
+        if field_name not in standard_cols:
+            raise ValueError(f"Unsupported field_name: {field_name}")
+
+        cs = self.load_continuous(
+            symbol,
+            start=start,
+            end=end,
+            adjust="nav",
+            nav_output="price",
+            stability_days=stability_days,
+        )
+        dates = pd.DatetimeIndex(cs.prices.index)
+        if dates.empty:
+            result = pd.Series(dtype=float, name=symbol)
+            self._set_cached(cache_key, result)
+            return result
+
+        if not cs.schedule.events:
+            result = pd.Series(index=dates, dtype=float, name=symbol)
+            self._set_cached(cache_key, result)
+            return result
+
+        active_contract = pd.Series(
+            [cs.schedule.get_active_contract(ts) for ts in dates],
+            index=dates,
+            name="contract_code",
+        )
+
+        pieces: list[pd.Series] = []
+        for contract_code, contract_dates in active_contract.groupby(active_contract):
+            segment_index = pd.DatetimeIndex(contract_dates.index)
+            bs = self.load_bar_series(
+                str(contract_code),
+                start=str(segment_index[0].date()),
+                end=str(segment_index[-1].date()),
+            )
+            if field_name not in bs.data.columns:
+                raise KeyError(f"Column '{field_name}' not found in contract '{contract_code}'.")
+            pieces.append(bs.data[field_name].reindex(segment_index))
+
+        result = pd.concat(pieces).sort_index().reindex(dates)
+        result.name = symbol
+        self._set_cached(cache_key, result)
+        return result
+
+    def load_continuous_contract_series(
+        self,
+        symbol: str,
+        start: str | None = None,
+        end: str | None = None,
+        stability_days: int = 1,
+    ) -> pd.Series:
+        """加载连续主力路径下的逐日主力合约代码序列。"""
+        cache_key = (
+            "load_continuous_contract_series",
+            symbol,
+            start,
+            end,
+            stability_days,
+        )
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        cs = self.load_continuous(
+            symbol,
+            start=start,
+            end=end,
+            adjust="nav",
+            nav_output="price",
+            stability_days=stability_days,
+        )
+        dates = pd.DatetimeIndex(cs.prices.index)
+        if dates.empty:
+            result = pd.Series(dtype=object, name=symbol)
+            self._set_cached(cache_key, result)
+            return result
+
+        if not cs.schedule.events:
+            result = pd.Series(index=dates, dtype=object, name=symbol)
+            self._set_cached(cache_key, result)
+            return result
+
+        result = pd.Series(
+            [cs.schedule.get_active_contract(ts) for ts in dates],
+            index=dates,
+            name=symbol,
+            dtype=object,
+        )
+        self._set_cached(cache_key, result)
+        return result
+
+    def load_continuous_field_returns_series(
+        self,
+        symbol: str,
+        field_name: str,
+        start: str | None = None,
+        end: str | None = None,
+        stability_days: int = 1,
+        zero_on_roll: bool = True,
+        clip_abs_return: float | None = 0.5,
+    ) -> pd.Series:
+        """加载连续主力字段的日收益序列，并可在换月日清零收益。"""
+        cache_key = (
+            "load_continuous_field_returns_series",
+            symbol,
+            field_name,
+            start,
+            end,
+            stability_days,
+            zero_on_roll,
+            clip_abs_return,
+        )
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        field_series = self.load_continuous_field_series(
+            symbol,
+            field_name,
+            start=start,
+            end=end,
+            stability_days=stability_days,
+        )
+        contract_series = self.load_continuous_contract_series(
+            symbol,
+            start=start,
+            end=end,
+            stability_days=stability_days,
+        ).reindex(field_series.index)
+
+        returns = field_series.pct_change()
+        if zero_on_roll and not contract_series.empty:
+            same_contract = contract_series.eq(contract_series.shift(1))
+            if not same_contract.empty:
+                same_contract.iloc[0] = False
+            returns = returns.where(same_contract, 0.0)
+        if clip_abs_return is not None:
+            returns = returns.where(returns.abs() <= clip_abs_return, 0.0)
+        if not returns.empty:
+            returns.iloc[0] = 0.0
+        returns = returns.fillna(0.0)
+        returns.name = symbol
+        self._set_cached(cache_key, returns)
+        return returns
+
+    def load_continuous_field_matrix(
+        self,
+        symbols: list[str],
+        field_name: str,
+        start: str | None = None,
+        end: str | None = None,
+        stability_days: int = 1,
+    ) -> pd.DataFrame:
+        """批量加载连续主力路径下的标准字段矩阵。"""
+        cache_key = (
+            "load_continuous_field_matrix",
+            tuple(symbols),
+            field_name,
+            start,
+            end,
+            stability_days,
+        )
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        series_dict: dict[str, pd.Series] = {}
+        for symbol in symbols:
+            try:
+                series = self.load_continuous_field_series(
+                    symbol,
+                    field_name,
+                    start=start,
+                    end=end,
+                    stability_days=stability_days,
+                )
+            except (FileNotFoundError, ValueError, KeyError):
+                continue
+            if not series.empty:
+                series_dict[symbol] = series
+
+        result = pd.DataFrame(series_dict).sort_index()
+        self._set_cached(cache_key, result)
+        return result
+
+    def load_continuous_field_returns_matrix(
+        self,
+        symbols: list[str],
+        field_name: str,
+        start: str | None = None,
+        end: str | None = None,
+        stability_days: int = 1,
+        zero_on_roll: bool = True,
+        clip_abs_return: float | None = 0.5,
+        min_obs: int = 0,
+    ) -> pd.DataFrame:
+        """批量加载连续主力字段的收益率矩阵。"""
+        cache_key = (
+            "load_continuous_field_returns_matrix",
+            tuple(symbols),
+            field_name,
+            start,
+            end,
+            stability_days,
+            zero_on_roll,
+            clip_abs_return,
+            min_obs,
+        )
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        series_dict: dict[str, pd.Series] = {}
+        for symbol in symbols:
+            try:
+                series = self.load_continuous_field_returns_series(
+                    symbol,
+                    field_name,
+                    start=start,
+                    end=end,
+                    stability_days=stability_days,
+                    zero_on_roll=zero_on_roll,
+                    clip_abs_return=clip_abs_return,
+                )
+            except (FileNotFoundError, ValueError, KeyError):
+                continue
+            if not series.empty:
+                series_dict[symbol] = series
+
+        result = pd.DataFrame(series_dict).sort_index()
+        if min_obs > 0 and not result.empty:
+            valid_counts = result.notna().sum()
+            keep = valid_counts[valid_counts >= min_obs].index.tolist()
+            result = result[keep]
+        self._set_cached(cache_key, result)
+        return result
+
     def load_continuous_matrix(
         self,
         symbols: list[str],

@@ -83,6 +83,8 @@ def _parse_args() -> argparse.Namespace:
         help="跳过 CorrCap 计算（节省时间）",
     )
     p.add_argument("--cost-bps", type=float, default=None, help="单边换手成本，单位 bps；默认使用 JPMConfig")
+    p.add_argument("--max-abs-weight", type=float, default=None, help="单品种持仓上限（绝对值），如 0.10")
+    p.add_argument("--max-gross-exposure", type=float, default=None, help="组合 gross 上限，如 1.50")
     p.add_argument("--verbose", action="store_true", default=True)
     return p.parse_args()
 
@@ -136,6 +138,8 @@ def main() -> None:
         vol_halflife=strategy.vol_halflife,
         trading_days=strategy.trading_days,
         cost_model=ProportionalCostModel(cost_bps / 10_000.0),
+        max_abs_weight=args.max_abs_weight,
+        max_gross_exposure=args.max_gross_exposure,
     )
     context = StrategyContext(
         loader=loader,

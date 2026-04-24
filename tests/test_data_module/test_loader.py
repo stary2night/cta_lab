@@ -290,6 +290,52 @@ class TestLoadContinuousPrebuilt:
         assert cs.schedule.events[0].to_contract == "RB2405"
         assert cs.schedule.events[1].to_contract == "RB2410"
 
+    def test_continuous_field_returns_zero_on_roll_day(self, tmp_root):
+        idx = pd.date_range("2024-01-02", periods=4, freq="B")
+        prebuilt = pd.DataFrame({"settle": [100.0, 101.0, 102.0, 103.0]}, index=idx)
+        schedule_df = pd.DataFrame(
+            {"to_contract": ["RB2405", "RB2410"]},
+            index=pd.DatetimeIndex([idx[0], idx[2]]),
+        )
+        rb2405 = pd.DataFrame(
+            {
+                "open": [100.0, 101.0],
+                "high": [101.0, 102.0],
+                "low": [99.0, 100.0],
+                "close": [100.0, 101.0],
+                "settle": [100.0, 101.0],
+                "volume": [1000.0, 1000.0],
+                "open_interest": [5000.0, 4800.0],
+            },
+            index=idx[:2],
+        )
+        rb2410 = pd.DataFrame(
+            {
+                "open": [200.0, 202.0],
+                "high": [201.0, 203.0],
+                "low": [199.0, 201.0],
+                "close": [200.0, 202.0],
+                "settle": [200.0, 202.0],
+                "volume": [1000.0, 1000.0],
+                "open_interest": [5200.0, 5100.0],
+            },
+            index=idx[2:],
+        )
+
+        src = ParquetSource(tmp_root)
+        src.write_dataframe("continuous/RB_nav", prebuilt)
+        src.write_dataframe("continuous/RB_nav_schedule", schedule_df)
+        src.write_dataframe("RB2405", rb2405)
+        src.write_dataframe("RB2410", rb2410)
+
+        loader = DataLoader(src)
+        ret = loader.load_continuous_field_returns_series("RB", "close")
+
+        assert ret.loc[idx[0]] == 0.0
+        assert ret.loc[idx[1]] == pytest.approx(0.01)
+        assert ret.loc[idx[2]] == 0.0
+        assert ret.loc[idx[3]] == pytest.approx(0.01)
+
     def test_prebuilt_schedule_from_sidecar_file(self, tmp_root):
         idx = pd.date_range("2024-01-02", periods=4, freq="B")
         df = pd.DataFrame({"settle": [100.0, 101.0, 102.0, 103.0]}, index=idx)

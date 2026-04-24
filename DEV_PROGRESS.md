@@ -1,6 +1,6 @@
 # cta_lab 开发进展记录
 
-> 最后更新：2026-04-23
+> 最后更新：2026-04-24
 
 `cta_lab` 当前已经从“合并 `cta` 与 `ddb` 的搭框架阶段”进入“平台收口与策略扩展并行阶段”。完整架构设计见 [DESIGN.md](DESIGN.md)。
 
@@ -56,6 +56,18 @@
 - `backtest/event/` 第四阶段已支持 adapter 级 `execution_lag` 与稀疏调仓日期；`EventRecorder` 的 turnover 已改为基于真实成交 notional 记录，避免把非调仓日权重漂移误记为换手；新增测试已验证稀疏调仓漂移、延迟执行和 close-to-close 调仓对齐 `VectorizedBacktest(lag=1)`
 - 回测层已新增统一轻量成本和滑点模型：`backtest/costs.py` 提供 `ZeroCostModel`、`ProportionalCostModel`、`DailyAccrualCostModel`、`CompositeCostModel`，`backtest/slippage.py` 提供 `NoSlippage` 与 `FixedBpsSlippage`；`VectorizedBacktest` 和 `EventDrivenBacktestEngine` 均已接入 `cost_model`，事件 broker 额外支持 `slippage_model`；向量化路径启用 `vol_target` 时已改为按 vol-target 后的有效执行权重计算换手和成本，并且 vol-target 热身期不再向前回填 scale
 - 典型策略运行入口已开始统一交易成本与换手报告：`run_crossmom.py`、`run_dual_momentum.py`、`run_jpm.py`、`run_multifactor_cta.py`、`run_overseas.py`、`run_tsmom.py` 支持 `--cost-bps` 并输出 `turnover_cost*.csv`，`full_sample_summary.csv` 中增加平均换手、年化换手、总成本和年化成本拖累；`JPMConfig.transaction_cost_bps` 已作为 JPM 策略默认成本来源，`run_jpm.py` 与 `run_jpm_event.py` 在未显式传入成本参数时回退到该配置，且 `run_jpm.py` 的成本报告已改用回测结果中的有效换手
+- **趋势+截面动量融合研究（2026-04-24 收口）**：新增 `scripts/run_jpm_crossmom_blend.py`，系统对比"时序 sleeve 选 JPM t-stat 还是 MF 多因子趋势"的融合策略。统一设置：target_vol=10%、成本=5bps、lag=1、中国期货全品种宇宙。JPM sleeve 在混合前先在 sleeve 层做单品种 clip(±10%) 和 gross 上限(1.5x)，MF CrossMOM sleeve 沿用 `MultiFactorCTAStrategy.build_cross_positions()`，两者按 ts_weight/cs_weight 加权平均后统一进入 `VectorizedBacktest` 做 vol-targeting 和扣费。全样本（2005-2026）回测结论：
+
+  | 组合 | 年化收益 | Vol | Sharpe | 最大回撤 |
+  |------|---------|-----|--------|---------|
+  | **JPM+CS (1:2)** | **16.38%** | 10.42% | **1.572** | -21.66% |
+  | JPM+CS (1:1) | 15.99% | 10.43% | 1.533 | -20.56% |
+  | JPM+CS (2:1) | 15.43% | 10.46% | 1.475 | -19.13% |
+  | MFTrend+CS (1:2) | 15.73% | 10.45% | 1.505 | -18.96% |
+  | MFTrend+CS (1:1) | 15.32% | 10.46% | 1.465 | -17.14% |
+  | MFTrend+CS (2:1) | 14.89% | 10.47% | 1.422 | -17.47% |
+
+  JPM 趋势信号在所有混合比例下均优于 MF 多因子趋势，最佳组合为 **JPM+CS 1:2（SR=1.572）**，相比 MF CTA 基准（SR≈1.47）提升约 0.1 Sharpe。代价是 JPM sleeve 集中度更高，最大回撤扩大约 3pct（约 -19% → -22%）。JPM 优势集中在 2012、2017、2019、2020 等趋势性强的年份，这些年份 MF 多因子趋势信号出现负 Sharpe，而 JPM t-stat 信号仍有效捕获方向。本轮趋势+截面动量融合研究已在此收口，后续若需进一步提升需在信号质量、动态 sleeve 权重或风险约束细节层面深化。
 - 第五阶段已把事件驱动范式接入策略层：`strategies/base/vectorized.py` 新增 `VectorizedStrategy`，`EventDrivenStrategy` 新增 `run_event_backtest(...)`，`strategies/examples/` 新增 `SimpleRelativeMomentumEventStrategy`，事件驱动 notebook 已改为从策略层导入样板策略
 - 策略基类继承关系已进一步收口：`StrategyBase` 继承 `VectorizedStrategy`；`crossmom_backtest.CrossMOMStrategy` 与 `dual_momentum_backtest.DualMomentumStrategy` 已补充继承 `StrategyBase`，并覆盖收益率矩阵口径的 `run_vectorized()`
 - `StrategyBase.run()` 保留为旧 `BacktestEngine` 权重矩阵状态推进兼容入口；新的 callback/order/broker 事件驱动范式统一走 `EventDrivenStrategy.run_event_backtest(...)`

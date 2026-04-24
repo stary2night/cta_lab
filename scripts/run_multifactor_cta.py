@@ -61,7 +61,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--cross-vol-window", type=int, default=20, help="截面动量波动率窗口，默认20")
     p.add_argument(
         "--cross-weighting",
-        choices=["global_equal", "sector_inverse_vol"],
+        choices=["global_equal", "global_inv_vol", "sector_inverse_vol"],
         default="global_equal",
         help="截面动量 sleeve 加权方式，默认 global_equal",
     )

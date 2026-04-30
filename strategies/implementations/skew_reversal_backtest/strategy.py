@@ -57,6 +57,9 @@ class SkewReversalStrategy(StrategyBase):
         self.trading_days = cfg.trading_days
         self.transaction_cost_bps = cfg.transaction_cost_bps
         self.transaction_cost_rate = cfg.transaction_cost_bps / 10_000.0
+        self.momentum_filter_window = cfg.momentum_filter_window
+        self.momentum_filter_threshold = cfg.momentum_filter_threshold
+        self.sector_cap = cfg.sector_cap
         self.exclude = set(cfg.exclude)
 
     def generate_signals(self, price_df: pd.DataFrame) -> pd.DataFrame:
@@ -97,11 +100,22 @@ class SkewReversalStrategy(StrategyBase):
         oi_change: pd.DataFrame | None = None,
         tradable_mask: pd.DataFrame | None = None,
         sigma_max: pd.DataFrame | None = None,
+        momentum_df: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
-        """Build daily long-short reversal targets before staggered rebalancing."""
+        """Build daily long-short reversal targets before staggered rebalancing.
+
+        When ``momentum_df`` is provided and ``momentum_filter_window > 0``:
+        - Long candidates (negative skew) are dropped if their rolling return
+          is below ``-momentum_filter_threshold`` (strong downtrend — skip recovery bet).
+        - Short candidates (positive skew) are dropped if their rolling return
+          is above ``+momentum_filter_threshold`` (strong uptrend — skip fading).
+        """
 
         positions = pd.DataFrame(0.0, index=skew_factor.index, columns=skew_factor.columns)
         oi_gate = None if oi_change is None else oi_change.lt(0.0)
+        use_mom_filter = (
+            momentum_df is not None and self.momentum_filter_window > 0
+        )
 
         for date in skew_factor.index:
             row = skew_factor.loc[date].dropna()
@@ -116,6 +130,21 @@ class SkewReversalStrategy(StrategyBase):
 
             long_names = list(row.nsmallest(n_long).index)
             short_names = list(row.nlargest(n_short).index)
+
+            # Momentum confirmation filter: suppress signals fighting strong trends
+            if use_mom_filter and date in momentum_df.index:
+                mom_row = momentum_df.loc[date]
+                thr = self.momentum_filter_threshold
+                # Drop long candidates in confirmed strong downtrend (return < -thr)
+                long_names = [
+                    s for s in long_names
+                    if pd.isna(mom_row.get(s, np.nan)) or mom_row.get(s, 0.0) >= -thr
+                ]
+                # Drop short candidates in confirmed strong uptrend (return > +thr)
+                short_names = [
+                    s for s in short_names
+                    if pd.isna(mom_row.get(s, np.nan)) or mom_row.get(s, 0.0) <= thr
+                ]
 
             if oi_gate is not None and date in oi_gate.index:
                 gate = oi_gate.loc[date]
@@ -268,6 +297,51 @@ class SkewReversalStrategy(StrategyBase):
         daily_positions = self.build_daily_positions(signal_df)
         return self.apply_staggered_rebalance(daily_positions)
 
+    def apply_sector_cap(
+        self,
+        positions: pd.DataFrame,
+        sector_symbol_map: dict[str, str],
+    ) -> pd.DataFrame:
+        """Scale down any sector whose gross weight exceeds ``sector_cap`` of total gross.
+
+        Operates row-by-row on the raw target positions before smoothing so the
+        cap is enforced at each rebalance date independently.  Total gross
+        exposure is preserved only approximately (each sector is scaled
+        independently; other sectors are not rescaled upward).
+
+        Parameters
+        ----------
+        positions:
+            Daily target weight DataFrame (positive = long, negative = short).
+        sector_symbol_map:
+            ``{symbol: sector_name}`` dict; unknown symbols fall into "Other".
+        """
+        if self.sector_cap <= 0 or not sector_symbol_map:
+            return positions
+
+        from collections import defaultdict
+
+        sector_cols: dict[str, list[str]] = defaultdict(list)
+        for sym in positions.columns:
+            sec = sector_symbol_map.get(sym, "Other")
+            sector_cols[sec].append(sym)
+
+        result = positions.copy()
+        for date in positions.index:
+            row = result.loc[date]
+            total_gross = row.abs().sum()
+            if total_gross == 0.0:
+                continue
+            for sec, syms in sector_cols.items():
+                available = [s for s in syms if s in row.index]
+                if not available:
+                    continue
+                sec_gross = row[available].abs().sum()
+                cap_abs = self.sector_cap * total_gross
+                if sec_gross > cap_abs and sec_gross > 0.0:
+                    result.loc[date, available] *= cap_abs / sec_gross
+        return result
+
     def apply_staggered_rebalance(self, daily_positions: pd.DataFrame) -> pd.DataFrame:
         """Split the book into N tranches and rotate one tranche per day."""
 
@@ -328,6 +402,7 @@ class SkewReversalStrategy(StrategyBase):
         start: str | None = None,
         end: str | None = None,
         verbose: bool = True,
+        lot_size_map: "dict[str, float] | pd.Series | None" = None,
     ) -> SkewReversalRunResult:
         """Load data, compute skew reversal signals, and run vectorized backtest."""
 
@@ -401,7 +476,15 @@ class SkewReversalStrategy(StrategyBase):
         if settle_returns.empty:
             settle_returns = returns.copy()
         oi_change = (open_interest / open_interest.shift(self.oi_lookback) - 1.0).reindex_like(returns)
-        contract_multiplier = self.resolve_contract_multiplier(context, symbols)
+        if lot_size_map is not None:
+            if isinstance(lot_size_map, pd.Series):
+                contract_multiplier = lot_size_map.reindex(symbols).fillna(1.0)
+            else:
+                contract_multiplier = pd.Series(
+                    {s: lot_size_map.get(s, 1.0) for s in symbols}, dtype=float
+                )
+        else:
+            contract_multiplier = self.resolve_contract_multiplier(context, symbols)
         tradable_mask = self.build_tradable_mask(
             settle_prices=settle_prices,
             open_interest=open_interest,
@@ -422,12 +505,30 @@ class SkewReversalStrategy(StrategyBase):
             close_returns,
         )
         sigma_max = self.compute_sigma_max(settle_returns)
+
+        # Momentum confirmation filter: rolling return over filter window
+        momentum_df: pd.DataFrame | None = None
+        if self.momentum_filter_window > 0:
+            momentum_df = settle_prices.pct_change(self.momentum_filter_window).reindex_like(returns)
+
         raw_positions = self.build_daily_positions(
             skew_factor,
             oi_change=oi_change,
             tradable_mask=tradable_mask,
             sigma_max=sigma_max,
+            momentum_df=momentum_df,
         )
+
+        # Sector concentration cap: limit any single sector's gross weight
+        if self.sector_cap > 0:
+            try:
+                from data.universe.sectors import SECTOR_MAP, build_symbol_sector_map
+
+                sector_symbol_map = build_symbol_sector_map(SECTOR_MAP)
+                raw_positions = self.apply_sector_cap(raw_positions, sector_symbol_map)
+            except ImportError:
+                pass  # sectors module unavailable; skip cap
+
         smoothed_positions = self.smooth_positions(raw_positions)
         vol_scale = self.compute_vol_scale(sigma_max)
         daily_positions = (

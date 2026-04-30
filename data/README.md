@@ -1,6 +1,6 @@
 # cta_lab data 数据层设计说明与使用指南
 
-> 最后更新：2026-04-20
+> 最后更新：2026-04-28
 
 ## 一、整体设计思路
 
@@ -187,6 +187,11 @@ DataLoader 是**唯一对外入口**，做三件事：
 - `contracts/{symbol}`
 - `instruments/{symbol}`
 - `calendars/{exchange}`
+
+`instrument_source` 当前也已经独立成正式入口：若未显式注入，`DataLoader` 会优先尝试
+`kline_source` 下的 `instruments/{symbol}`，若该文件不存在且已经配置了
+`contract_source`，则继续回退到 `contract_source` 读取并按 `InstrumentSchema`
+提取品种静态信息。这让“合约主表同时兼任 instrument 元数据来源”成为正式支持路径。
 
 #### KlineSchema 预置
 

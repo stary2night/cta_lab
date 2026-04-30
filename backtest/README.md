@@ -1,5 +1,7 @@
 # Backtest Layer
 
+> Last updated: 2026-04-28
+
 `backtest/` 同时支持向量化研究回测和轻量事件驱动回测。两种范式共享
 `BacktestResult`，但职责边界不同：
 
@@ -30,12 +32,21 @@
 - `scripts/run_crossmom.py --cost-bps`
 - `scripts/run_dual_momentum.py --cost-bps`
 - `scripts/run_jpm.py --cost-bps`
+- `scripts/run_multifactor_cta.py --cost-bps`
+- `scripts/run_netmom.py --cost-bps`
 - `scripts/run_overseas.py --cost-bps`
 - `scripts/run_tsmom.py --cost-bps`，并保留旧 `--fee-rate`
 - `scripts/run_jpm_event.py --commission-bps --slippage-bps`
 
 向量化脚本会输出 `turnover_cost*.csv`，并在 `full_sample_summary.csv` 中增加平均换手、年化换手、总交易成本和年化成本拖累。
 其中 `jpm_trend_trade/JPMConfig` 已包含 `transaction_cost_bps` 默认配置；`run_jpm.py` 未显式传入 `--cost-bps` 时使用该默认值，`run_jpm_event.py` 未显式传入 `--commission-bps` 或正的 `--commission-rate` 时也回退到该默认值。
+
+需要特别说明的是，`VectorizedBacktest` 现在的换手与成本口径已经对齐“有效执行权重”：
+
+- 先对 `weights_df` 做 `lag` 对齐，得到实际执行权重
+- 若启用 `vol_target`，先基于未扣费组合收益估计 EWMA scale，再把 scale 作用到执行权重
+- 换手、成本、`max_abs_weight`、`max_gross_exposure` 都在这个有效执行权重层面计算
+- vol-target 热身期 scale 保持为 0，不向前回填未来波动率，避免早期仓位被未来信息放大
 
 ## Slippage Model
 

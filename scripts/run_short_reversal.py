@@ -1,4 +1,10 @@
-"""Skew reversal CTA 中国期货回测入口。"""
+"""Short-term reversal CTA 中国期货回测入口。
+
+策略逻辑：
+  signal = -log(price_{t-skip} / price_{t-skip-window})
+  做空近期涨幅最大品种，做多近期跌幅最大品种（逆势反转）。
+  无需 far-leg 合约数据，仅使用主力连续合约收益率和持仓量。
+"""
 
 from __future__ import annotations
 
@@ -27,14 +33,15 @@ from analysis.report.charts import (
 from analysis.report.output import BacktestOutput
 from backtest import ProportionalCostModel
 from backtest.vectorized import VectorizedBacktest
-from data.loader import DataLoader, KlineSchema
+from data.loader import ContractSchema, DataLoader, InstrumentSchema, KlineSchema
+from data.sources.column_keyed_source import ColumnKeyedSource
 from data.sources.parquet_source import ParquetSource
 from strategies.context import StrategyContext
-from strategies.implementations.skew_reversal_backtest import SkewReversalStrategy
+from strategies.implementations.short_reversal_backtest import ShortReversalStrategy
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Skew reversal 中国期货回测")
+    p = argparse.ArgumentParser(description="短期反转 中国期货回测")
     p.add_argument(
         "--data-dir",
         default=str(_CTA_LAB.parent / "market_data" / "kline" / "china_daily_full"),
@@ -43,38 +50,51 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--contract-info",
         default=str(_CTA_LAB.parent / "market_data" / "contracts" / "china" / "contract_info.parquet"),
-        help="合约元数据 parquet 路径，用于加载 per_unit (lot_size)",
+        help="合约元数据 parquet 路径",
     )
     p.add_argument(
         "--out-dir",
-        default=str(_CTA_LAB.parent / "research_outputs" / "skew_reversal_china"),
+        default=str(_CTA_LAB.parent / "research_outputs" / "short_reversal_china"),
         help="输出根目录",
     )
     p.add_argument("--start", default=None, help="回测开始日期，例如 2012-01-01")
     p.add_argument("--end", default=None, help="回测结束日期，例如 2025-12-31")
-    p.add_argument("--target-vol", type=float, default=0.05, help="组合目标年化波动率，默认0.05")
-    p.add_argument("--top-pct", type=float, default=0.25, help="截面做空比例，默认0.25")
-    p.add_argument("--bottom-pct", type=float, default=0.25, help="截面做多比例，默认0.25")
-    p.add_argument("--oi-lookback", type=int, default=10, help="持仓量变化窗口，默认10")
+    p.add_argument(
+        "--reversal-window", type=int, default=21,
+        help="反转窗口（交易日），默认21（约1个月）",
+    )
+    p.add_argument(
+        "--skip-days", type=int, default=1,
+        help="信号窗口前跳过天数（微观结构缓冲），默认1",
+    )
+    p.add_argument(
+        "--signal-clip", type=float, default=0.30,
+        help="信号截断阈值（log单位），默认0.30",
+    )
+    p.add_argument("--min-obs", type=int, default=65, help="最少观测天数，默认65")
+    p.add_argument("--min-listing-days", type=int, default=65, help="最少上市天数，默认65")
+    p.add_argument(
+        "--vol-scale-windows",
+        default="20,60,120",
+        help="波动率窗口，逗号分隔，默认20,60,120",
+    )
     p.add_argument("--rebalance-buckets", type=int, default=20, help="轮动桶数，默认20")
-    p.add_argument("--smoothing-window", type=int, default=20, help="目标权重平滑窗口，默认20")
-    p.add_argument("--close-settle-blend-alpha", type=float, default=0.70, help="收盘/结算偏度融合权重 alpha，默认0.70")
-    p.add_argument("--disable-close-settle-correction", action="store_true", help="关闭收盘/结算偏度冲突修正")
+    p.add_argument(
+        "--selection-weighting",
+        choices=["equal", "inv_vol"],
+        default="inv_vol",
+        help="截面权重方式，默认 inv_vol",
+    )
+    p.add_argument("--max-abs-weight", type=float, default=0.06, help="单品种权重上限，默认0.06")
+    p.add_argument("--max-gross-exposure", type=float, default=1.0, help="组合 gross 上限，默认1.0")
+    p.add_argument("--target-vol", type=float, default=0.05, help="组合目标年化波动率，默认0.05")
     p.add_argument("--cost-bps", type=float, default=5.0, help="单边换手成本，单位bps，默认5")
-    p.add_argument(
-        "--momentum-filter-window", type=int, default=0,
-        help="动量确认过滤窗口(交易日)，0=禁用；建议63(3个月)，仅当趋势与偏度方向一致时才抑制反转信号",
-    )
-    p.add_argument(
-        "--momentum-filter-threshold", type=float, default=0.05,
-        help="动量过滤阈值，默认0.05(5%%)；多头候选63日收益率<-thr时抑制；空头>+thr时抑制",
-    )
-    p.add_argument(
-        "--sector-cap", type=float, default=0.0,
-        help="板块总暴露上限（占组合总 gross 比例），0=禁用；建议0.30(30%%)",
-    )
     p.add_argument("--verbose", action="store_true", default=True)
     return p.parse_args()
+
+
+def _parse_int_list(text: str) -> list[int]:
+    return [int(part.strip()) for part in text.split(",") if part.strip()]
 
 
 def _turnover_cost_frame(turnover: pd.Series | None, cost_rate: float) -> pd.DataFrame:
@@ -102,13 +122,12 @@ def _turnover_cost_summary(frame: pd.DataFrame, trading_days: int) -> dict[str, 
 
 
 def _load_lot_size_map(contract_info_path: str) -> dict[str, float]:
-    """从 contract_info.parquet 加载品种 lot_size（per_unit 列）。"""
     try:
         df = pd.read_parquet(contract_info_path)
         lot_size = df.groupby("fut_code")["per_unit"].first().dropna()
         return lot_size.to_dict()
-    except Exception as e:
-        print(f"[WARN] 无法加载 lot_size，将使用默认值 1.0: {e}")
+    except Exception as exc:
+        print(f"[WARN] 无法加载 lot_size，将使用默认值 1.0: {exc}")
         return {}
 
 
@@ -120,30 +139,35 @@ def main() -> None:
         subdirs=["reports", "charts", "signals", "data"],
     )
 
-    strategy = SkewReversalStrategy(
+    strategy = ShortReversalStrategy(
         config={
-            "top_pct": args.top_pct,
-            "bottom_pct": args.bottom_pct,
-            "oi_lookback": args.oi_lookback,
+            "reversal_window": args.reversal_window,
+            "skip_days": args.skip_days,
+            "signal_clip": args.signal_clip,
+            "min_obs": args.min_obs,
+            "min_listing_days": args.min_listing_days,
+            "vol_scale_windows": _parse_int_list(args.vol_scale_windows),
             "rebalance_buckets": args.rebalance_buckets,
-            "smoothing_window": args.smoothing_window,
-            "close_settle_blend_alpha": args.close_settle_blend_alpha,
-            "use_close_settle_correction": not args.disable_close_settle_correction,
+            "selection_weighting": args.selection_weighting,
+            "max_abs_weight": args.max_abs_weight,
+            "max_gross_exposure": args.max_gross_exposure,
             "target_vol": args.target_vol,
             "transaction_cost_bps": args.cost_bps,
-            "momentum_filter_window": args.momentum_filter_window,
-            "momentum_filter_threshold": args.momentum_filter_threshold,
-            "sector_cap": args.sector_cap,
         }
     )
 
+    contract_source = ColumnKeyedSource(args.contract_info, filter_col="fut_code")
     loader = DataLoader(
         kline_source=ParquetSource(args.data_dir),
+        contract_source=contract_source,
+        instrument_source=contract_source,
         kline_schema=KlineSchema.tushare(),
+        contract_schema=ContractSchema.tushare(),
+        instrument_schema=InstrumentSchema.china_from_contracts(),
     )
     backtest = VectorizedBacktest(
         lag=1,
-        vol_target=strategy.target_vol,
+        vol_target=None,
         vol_halflife=strategy.vol_halflife,
         trading_days=strategy.trading_days,
         max_gross_exposure=strategy.max_gross_exposure,
@@ -170,14 +194,11 @@ def main() -> None:
 
     out.save_parquet(returns, "data", "returns.parquet")
     out.save_json({"symbols": returns.columns.tolist()}, "data", "asset_list.json")
-    out.save_parquet(result.settle_skew, "signals", "settle_skew.parquet")
-    out.save_parquet(result.close_skew, "signals", "close_skew.parquet")
-    out.save_parquet(result.skew_factor, "signals", "skew_factor.parquet")
-    out.save_parquet(result.oi_change, "signals", "oi_change.parquet")
+    out.save_parquet(result.settle_prices, "signals", "settle_prices.parquet")
+    out.save_parquet(result.signal, "signals", "signal.parquet")
+    out.save_parquet(result.tradable_mask, "signals", "tradable_mask.parquet")
+    out.save_parquet(result.sigma_max, "signals", "sigma_max.parquet")
     out.save_parquet(result.raw_positions, "signals", "raw_positions.parquet")
-    out.save_parquet(result.smoothed_positions, "signals", "smoothed_positions.parquet")
-    out.save_parquet(result.vol_scale, "signals", "vol_scale.parquet")
-    out.save_parquet(result.daily_positions, "signals", "daily_positions.parquet")
     out.save_parquet(positions, "signals", "positions.parquet")
 
     annual_df = annual_stats(pnl)
@@ -188,7 +209,16 @@ def main() -> None:
     )
     summary = pnl_stats(pnl)
     summary.update(_turnover_cost_summary(turnover_df, strategy.trading_days))
-    summary_df = pd.DataFrame([summary]).rename(index={0: "SkewReversal"})
+    summary.update(
+        {
+            "SignalCoverage(%)": round(float(result.signal.notna().mean().mean() * 100.0), 2),
+            "LiveDays": int((positions.abs().sum(axis=1) > 0).sum()),
+            "Symbols": int(returns.shape[1]),
+            "ReversalWindow": strategy.reversal_window,
+            "SkipDays": strategy.skip_days,
+        }
+    )
+    summary_df = pd.DataFrame([summary]).rename(index={0: "ShortReversal"})
 
     out.save_csv(annual_df, "reports", "annual.csv")
     out.save_csv(monthly_df, "reports", "monthly.csv")
@@ -197,30 +227,30 @@ def main() -> None:
 
     out.save_fig(
         plot_nav_with_drawdown(
-            {"SkewReversal": pnl},
-            title="China Futures Skew Reversal",
+            {"ShortReversal": pnl},
+            title=f"China Futures Short-Term Reversal ({args.reversal_window}d)",
         ),
-        "charts", "nav_skew_reversal.png", dpi=150, bbox_inches="tight",
+        "charts", "nav_short_reversal.png", dpi=150, bbox_inches="tight",
     )
     out.save_fig(
         plot_annual_bar(
-            {"SkewReversal": annual_df},
-            title="China Futures Skew Reversal — Annual Returns",
+            {"ShortReversal": annual_df},
+            title=f"China Futures Short-Term Reversal — Annual Returns ({args.reversal_window}d)",
         ),
         "charts", "annual_returns_bar.png", dpi=150,
     )
     out.save_fig(
         plot_monthly_heatmap(
             monthly_df,
-            title="China Futures Skew Reversal — Monthly Returns (%)",
+            title=f"China Futures Short-Term Reversal — Monthly Returns % ({args.reversal_window}d)",
         ),
         "charts", "monthly_heatmap.png", dpi=150, bbox_inches="tight",
     )
 
-    if not annual_df.empty:
-        print("\nAnnual returns (%):")
-        print(annual_df.round(2).to_string())
-    print(f"\nSaved outputs to: {Path(args.out_dir).resolve()}")
+    print("\nFull sample summary:")
+    print(summary_df.to_string())
+    print("\nAll outputs:")
+    out.summary()
 
 
 if __name__ == "__main__":

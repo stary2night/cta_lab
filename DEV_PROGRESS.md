@@ -1,6 +1,6 @@
 # cta_lab 开发进展记录
 
-> 最后更新：2026-04-24
+> 最后更新：2026-04-28
 
 `cta_lab` 当前已经从“合并 `cta` 与 `ddb` 的搭框架阶段”进入“平台收口与策略扩展并行阶段”。完整架构设计见 [DESIGN.md](DESIGN.md)。
 
@@ -55,7 +55,7 @@
 - `backtest/event/` 第三阶段已加入 `TargetWeightStrategyAdapter`，可把现有 `weights_df` 作为事件驱动策略运行；新增测试已验证 `lag=0`、`fee=0`、每日权重口径下可与 `VectorizedBacktest` 对齐
 - `backtest/event/` 第四阶段已支持 adapter 级 `execution_lag` 与稀疏调仓日期；`EventRecorder` 的 turnover 已改为基于真实成交 notional 记录，避免把非调仓日权重漂移误记为换手；新增测试已验证稀疏调仓漂移、延迟执行和 close-to-close 调仓对齐 `VectorizedBacktest(lag=1)`
 - 回测层已新增统一轻量成本和滑点模型：`backtest/costs.py` 提供 `ZeroCostModel`、`ProportionalCostModel`、`DailyAccrualCostModel`、`CompositeCostModel`，`backtest/slippage.py` 提供 `NoSlippage` 与 `FixedBpsSlippage`；`VectorizedBacktest` 和 `EventDrivenBacktestEngine` 均已接入 `cost_model`，事件 broker 额外支持 `slippage_model`；向量化路径启用 `vol_target` 时已改为按 vol-target 后的有效执行权重计算换手和成本，并且 vol-target 热身期不再向前回填 scale
-- 典型策略运行入口已开始统一交易成本与换手报告：`run_crossmom.py`、`run_dual_momentum.py`、`run_jpm.py`、`run_multifactor_cta.py`、`run_overseas.py`、`run_tsmom.py` 支持 `--cost-bps` 并输出 `turnover_cost*.csv`，`full_sample_summary.csv` 中增加平均换手、年化换手、总成本和年化成本拖累；`JPMConfig.transaction_cost_bps` 已作为 JPM 策略默认成本来源，`run_jpm.py` 与 `run_jpm_event.py` 在未显式传入成本参数时回退到该配置，且 `run_jpm.py` 的成本报告已改用回测结果中的有效换手
+- 典型策略运行入口已开始统一交易成本与换手报告：`run_crossmom.py`、`run_dual_momentum.py`、`run_jpm.py`、`run_multifactor_cta.py`、`run_netmom.py`、`run_overseas.py`、`run_tsmom.py` 支持 `--cost-bps` 并输出 `turnover_cost*.csv`，`full_sample_summary.csv` 中增加平均换手、年化换手、总成本和年化成本拖累；`JPMConfig.transaction_cost_bps` 已作为 JPM 策略默认成本来源，`run_jpm.py` 与 `run_jpm_event.py` 在未显式传入成本参数时回退到该配置，且 `run_jpm.py` 的成本报告已改用回测结果中的有效换手
 - **趋势+截面动量融合研究（2026-04-24 收口）**：新增 `scripts/run_jpm_crossmom_blend.py`，系统对比"时序 sleeve 选 JPM t-stat 还是 MF 多因子趋势"的融合策略。统一设置：target_vol=10%、成本=5bps、lag=1、中国期货全品种宇宙。JPM sleeve 在混合前先在 sleeve 层做单品种 clip(±10%) 和 gross 上限(1.5x)，MF CrossMOM sleeve 沿用 `MultiFactorCTAStrategy.build_cross_positions()`，两者按 ts_weight/cs_weight 加权平均后统一进入 `VectorizedBacktest` 做 vol-targeting 和扣费。全样本（2005-2026）回测结论：
 
   | 组合 | 年化收益 | Vol | Sharpe | 最大回撤 |
@@ -68,6 +68,9 @@
   | MFTrend+CS (2:1) | 14.89% | 10.47% | 1.422 | -17.47% |
 
   JPM 趋势信号在所有混合比例下均优于 MF 多因子趋势，最佳组合为 **JPM+CS 1:2（SR=1.572）**，相比 MF CTA 基准（SR≈1.47）提升约 0.1 Sharpe。代价是 JPM sleeve 集中度更高，最大回撤扩大约 3pct（约 -19% → -22%）。JPM 优势集中在 2012、2017、2019、2020 等趋势性强的年份，这些年份 MF 多因子趋势信号出现负 Sharpe，而 JPM t-stat 信号仍有效捕获方向。本轮趋势+截面动量融合研究已在此收口，后续若需进一步提升需在信号质量、动态 sleeve 权重或风险约束细节层面深化。
+- **Network Momentum 研究（2026-04-28 收口）**：新增 `signals/network/` 与 `strategies/implementations/netmom_backtest/`，把论文 *Network Momentum across Asset Classes* 的图网络动量框架正式接入中国期货研究链路。实现上补齐了图学习、网络特征、walk-forward 训练、组合定仓与回测输出，并对中国市场做了几处关键修正：去除 `ret_1`、加入 `ret_5`，训练标签不再把缺失未来收益填成 0，训练窗口内部不再把末端网络回填给整段历史样本，上市前价格保留 `NaN` 以避免假相似关系，持仓层增加单品种上限与 gross exposure 上限，默认成本设为 3bps。`scripts/run_netmom.py` 已成为正式入口，当前默认交易参数组（`train_window=1008`、`retrain_freq=10`、`trend_threshold=0.0005`、`graph_method=feature_sim`）全样本结果约为 **年化 15.0% / Vol 7.89% / Sharpe 1.90 / MaxDD -14.21%**；相比修正前的高换手原型，当前结果更接近可交易研究基线。
+- **Trend / Cross / NetMOM 三 sleeve 组合研究（2026-04-28 收口）**：新增 `scripts/run_trend_cross_netmom_combo.py`，把 `MF_Trend`、`MF_Cross` 与 `NetMOM` 作为独立 sleeve 组合，先各自按子策略口径扣费，再在组合层做等权和 rolling risk parity。全样本（重叠样本）结果显示：`MF_Trend` / `MF_Cross` / `NetMOM` 单 sleeve 的 Sharpe 分别约为 `1.47 / 1.86 / 1.90`，而 `EqualWeight` 可提升到 **2.226**、`RiskParity` 可提升到 **2.286**，对应最大回撤约 **-7.98% / -9.49%**。其中 `MF_Cross` 与 `NetMOM` 的日频相关性仅约 `0.24`，说明 `NetMOM` 已经不仅是“又一条动量信号”，而是能为现有趋势 + 截面框架提供真实分散化收益的新 sleeve。
+- **NetMOM 扩展到多 sleeve 组合后的结论（2026-04-28 收口）**：后续用 `scripts/run_trend_cross_netmom_basis_skew_combo.py` 与 `scripts/run_trend_cross_netmom_bm_skew_overlay.py` 测试了 `BasisMomentum`、`BasisValue`、`SkewReversal` 对核心三 sleeve 组合的增强效果。结论是：`BasisValue` 当前质量不足，不适合纳入主组合；`BasisMomentum` 适合作为小权重防守增强；`SkewReversal` 只适合极轻权重点缀。当前最推荐的增强方案是 **`87.5% InvVol(3) + 12.5% BasisMomentum`**：在尽量保住核心组合收益的前提下，把最大回撤从约 `-8.13%` 改善到约 **-6.86%**，Sharpe 提升到约 **2.27**。这条结论对后续中国期货组合研发很重要：主干 alpha 仍来自 `trend + cross + netmom`，其余 sleeve 更适合作为风险整形层，而不是与核心三策略等权对待。
 - 第五阶段已把事件驱动范式接入策略层：`strategies/base/vectorized.py` 新增 `VectorizedStrategy`，`EventDrivenStrategy` 新增 `run_event_backtest(...)`，`strategies/examples/` 新增 `SimpleRelativeMomentumEventStrategy`，事件驱动 notebook 已改为从策略层导入样板策略
 - 策略基类继承关系已进一步收口：`StrategyBase` 继承 `VectorizedStrategy`；`crossmom_backtest.CrossMOMStrategy` 与 `dual_momentum_backtest.DualMomentumStrategy` 已补充继承 `StrategyBase`，并覆盖收益率矩阵口径的 `run_vectorized()`
 - `StrategyBase.run()` 保留为旧 `BacktestEngine` 权重矩阵状态推进兼容入口；新的 callback/order/broker 事件驱动范式统一走 `EventDrivenStrategy.run_event_backtest(...)`
@@ -90,6 +93,7 @@
 - `dual_momentum_backtest/`
 - `jpm_trend_trade/`
 - `multifactor_cta_backtest/`
+- `netmom_backtest/`
 - `overseas_backtest/`
 - `gmat3/`
 
@@ -97,6 +101,7 @@
 
 - `jpm_trend_trade/`：JPM t-stat + CorrCap 路径完整落地，并新增事件驱动版本 `JPMEventDrivenStrategy`；事件驱动版可通过 `scripts/run_jpm_event.py` 运行 baseline、CorrCap 或两者对比，脚本支持 `--start/--end` 做短区间事件回测 smoke test，也支持交易成本与固定 bps 滑点参数；向量化与事件驱动入口均已接入 `JPMConfig.transaction_cost_bps` 默认成本配置；向量化 CorrCap 路径已关闭回测阶段二次 vol-targeting，避免与 `CorrCapSizer` 的目标波动缩放重复
 - `multifactor_cta_backtest/`：新增中国期货多因子 CTA 第一版，组合 `MultiFactorTrendSignal` 七因子趋势和 `MultiFactorCrossSectionalMomentumSignal` 四因子板块内截面动量；策略已升级为 sleeve-blend，趋势 sleeve 独立做 inverse-vol sizing 与单品种/gross 上限，截面动量 sleeve 默认做四因子行业内多空等权组合，并保留 `sector_inverse_vol` 行业中性 sleeve 风险预算实验分支，组合层按 `trend_weight/cross_weight` 混合持仓后统一回测、波控和扣费；截面动量已修正预热期行为，预热不足时不参与行业排名，避免前导零值形成假多空信号；`scripts/run_multifactor_cta.py` 是中国期货运行入口，`scripts/run_multifactor_cta_global.py` 是国内 + 境外期货全局品种池运行入口，均支持 `--start/--end` 区间控制
+- `netmom_backtest/`：新增论文 *Network Momentum across Asset Classes* 的中国期货落地版本。策略包承接网络特征构造、图学习、walk-forward Ridge 训练、`combo/net_only` 两种模式、仓位上限和 gross exposure 约束，并通过 `scripts/run_netmom.py` 输出完整的信号、持仓、换手、成本与图表报告。当前经验结论是：修正缺失标签、时序错配与假相似网络后，`NetMOM` 已经成为可纳入正式 sleeve 组合研究的新主力子策略，而不是单纯的研究原型
 - `overseas_backtest/`：海外趋势对比研究已收口为 `OverseasTrendSuite`，策略包承接 JPM t-stat、TSMOM、Dual Momentum 三条研究路径的信号、定仓与回测，`scripts/run_overseas.py` 保留为 CLI 与输出入口
 - `gmat3/`：已形成从数据接入到指数合成的完整目录化实现
 - `crossmom_backtest/`：已完成第一版样板试验，并把包内 `context` 上提为框架级 `strategies/context.py`；当前通过共享 `StrategyContext` 集成核心依赖，策略包已补齐轻量 `run_pipeline`，`scripts/run_crossmom.py` 只负责 CLI 与输出。`tsmom_backtest/`、`dual_momentum_backtest/`、`jpm_trend_trade/` 也已同步接入共享 context 路径，对应入口脚本现已统一使用同一套 `StrategyContext`

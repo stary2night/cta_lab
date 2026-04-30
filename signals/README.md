@@ -1,6 +1,6 @@
 # Signals Module
 
-> Last updated: 2026-04-23
+> Last updated: 2026-04-28
 
 `signals/` 是 `cta_lab` 的信号定义层，负责把价格或价格矩阵转换为可研究、可组合的信号序列。
 
@@ -53,6 +53,7 @@
 signals/
 ├── base.py
 ├── momentum/
+├── network/
 ├── reversal/
 ├── risk/
 ├── carry/
@@ -67,6 +68,9 @@ signals/
 - `dual_momentum.py`
 - `multifactor_trend.py`
 - `multifactor_crossmom.py`
+
+`network/` 当前提供 `NetworkMomentumSignal` 及其配套特征构造、图学习与网络传播逻辑，
+用于复现和扩展 *Network Momentum across Asset Classes* 一类跨资产网络动量研究。
 
 ## 当前输出语义约定
 
@@ -90,6 +94,8 @@ signals/
 - `DualMomentumSignal` 已提供板块内相对动量 + 绝对动量的截面实现
 - `MultiFactorTrendSignal` 已提供商品 CTA 风格七因子趋势信号，覆盖长周期累计收益、价格突破、收益均值突破和长短均值残差等趋势维度
 - `MultiFactorCrossSectionalMomentumSignal` 已提供商品 CTA 风格四因子截面动量信号，在行业内按数量选择 top/bottom 分位并合成方向强度；预热期不足的因子值保持缺失，不参与截面排名，避免把前导零值误当成有效信号；同时提供四因子多空等权 portfolio weights，用于策略层按 sleeve 方式组合，并保留行业中性 sleeve inverse-vol 加权的实验分支
+- `SkewReversalSignal` 已作为 `signals/reversal/` 的正式导出对象，与 `MASS260Reversal` 并列，承接基于偏度与持仓量变化的中国期货反转研究
+- `NetworkMomentumSignal` 已形成正式信号实现：支持 `net_only` 与 `combo` 两种模式，内部包含网络图学习、网络特征传播与 walk-forward Ridge 训练；训练标签保留真实缺失，不再把缺失未来收益隐式当成零值，训练窗口内部也不再把末端网络结构回填给整段历史样本
 - `signals/operators/` 已从规划项变成正式模块
 
 ## Signal S2 Operators

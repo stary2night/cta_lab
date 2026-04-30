@@ -1,4 +1,14 @@
-"""Skew reversal CTA 中国期货回测入口。"""
+"""Skew reversal CTA 海外期货回测入口。
+
+使用 overseas_daily_full/ 多合约原始数据，通过 DataLoader OI-max 规则构建连续合约，
+对 46 个海外期货品种运行偏度反转策略回测（可记录 2010 年以来的表现）。
+
+与国内版的主要差异：
+  - KlineSchema.overseas() + ContractSchema.overseas()
+  - 无 CNY 流动性阈值（设为 0），依赖挂牌天数过滤和 OI 持仓量门控
+  - close/settle 无区分（overseas 数据均为 settle），禁用 close-settle 融合修正
+  - 默认成本 3 bps（海外主流品种流动性更好）
+"""
 
 from __future__ import annotations
 
@@ -8,6 +18,7 @@ import warnings
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import pandas as pd
 
@@ -27,51 +38,48 @@ from analysis.report.charts import (
 from analysis.report.output import BacktestOutput
 from backtest import ProportionalCostModel
 from backtest.vectorized import VectorizedBacktest
-from data.loader import DataLoader, KlineSchema
+from data.loader import ContractSchema, DataLoader, InstrumentSchema, KlineSchema
 from data.sources.parquet_source import ParquetSource
 from strategies.context import StrategyContext
 from strategies.implementations.skew_reversal_backtest import SkewReversalStrategy
 
+# 排除加密货币、波动率指数和近期才上市的品种（历史数据不足，行为特殊）
+_OVERSEAS_EXCLUDE = {"BTC", "VX", "HTI", "A01"}
+
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Skew reversal 中国期货回测")
+    p = argparse.ArgumentParser(description="Skew reversal 海外期货回测")
     p.add_argument(
-        "--data-dir",
-        default=str(_CTA_LAB.parent / "market_data" / "kline" / "china_daily_full"),
-        help="china_daily_full/ 数据目录",
+        "--kline-dir",
+        default=str(_CTA_LAB.parent / "market_data" / "kline" / "overseas_daily_full"),
+        help="overseas_daily_full/ 数据目录",
     )
     p.add_argument(
-        "--contract-info",
-        default=str(_CTA_LAB.parent / "market_data" / "contracts" / "china" / "contract_info.parquet"),
-        help="合约元数据 parquet 路径，用于加载 per_unit (lot_size)",
+        "--contract-dir",
+        default=str(_CTA_LAB.parent / "market_data" / "contracts" / "overseas"),
+        help="海外合约元数据目录",
     )
     p.add_argument(
         "--out-dir",
-        default=str(_CTA_LAB.parent / "research_outputs" / "skew_reversal_china"),
+        default=str(_CTA_LAB.parent / "research_outputs" / "skew_reversal_overseas"),
         help="输出根目录",
     )
-    p.add_argument("--start", default=None, help="回测开始日期，例如 2012-01-01")
+    p.add_argument("--start", default=None, help="回测开始日期，例如 2010-01-01")
     p.add_argument("--end", default=None, help="回测结束日期，例如 2025-12-31")
     p.add_argument("--target-vol", type=float, default=0.05, help="组合目标年化波动率，默认0.05")
-    p.add_argument("--top-pct", type=float, default=0.25, help="截面做空比例，默认0.25")
-    p.add_argument("--bottom-pct", type=float, default=0.25, help="截面做多比例，默认0.25")
-    p.add_argument("--oi-lookback", type=int, default=10, help="持仓量变化窗口，默认10")
-    p.add_argument("--rebalance-buckets", type=int, default=20, help="轮动桶数，默认20")
-    p.add_argument("--smoothing-window", type=int, default=20, help="目标权重平滑窗口，默认20")
-    p.add_argument("--close-settle-blend-alpha", type=float, default=0.70, help="收盘/结算偏度融合权重 alpha，默认0.70")
-    p.add_argument("--disable-close-settle-correction", action="store_true", help="关闭收盘/结算偏度冲突修正")
-    p.add_argument("--cost-bps", type=float, default=5.0, help="单边换手成本，单位bps，默认5")
+    p.add_argument("--top-pct", type=float, default=0.25, help="截面做空比例")
+    p.add_argument("--bottom-pct", type=float, default=0.25, help="截面做多比例")
+    p.add_argument("--oi-lookback", type=int, default=10, help="持仓量变化窗口")
+    p.add_argument("--rebalance-buckets", type=int, default=20, help="轮动桶数")
+    p.add_argument("--smoothing-window", type=int, default=20, help="目标权重平滑窗口")
+    p.add_argument("--cost-bps", type=float, default=3.0, help="单边换手成本bps，默认3")
     p.add_argument(
         "--momentum-filter-window", type=int, default=0,
-        help="动量确认过滤窗口(交易日)，0=禁用；建议63(3个月)，仅当趋势与偏度方向一致时才抑制反转信号",
+        help="动量确认过滤窗口(交易日)，0=禁用",
     )
     p.add_argument(
         "--momentum-filter-threshold", type=float, default=0.05,
-        help="动量过滤阈值，默认0.05(5%%)；多头候选63日收益率<-thr时抑制；空头>+thr时抑制",
-    )
-    p.add_argument(
-        "--sector-cap", type=float, default=0.0,
-        help="板块总暴露上限（占组合总 gross 比例），0=禁用；建议0.30(30%%)",
+        help="动量过滤阈值，默认0.05",
     )
     p.add_argument("--verbose", action="store_true", default=True)
     return p.parse_args()
@@ -85,7 +93,7 @@ def _turnover_cost_frame(turnover: pd.Series | None, cost_rate: float) -> pd.Dat
     return frame
 
 
-def _turnover_cost_summary(frame: pd.DataFrame, trading_days: int) -> dict[str, float]:
+def _turnover_cost_summary(frame: pd.DataFrame, trading_days: int) -> dict:
     if frame.empty:
         return {
             "AvgTurnover(%)": 0.0,
@@ -101,17 +109,6 @@ def _turnover_cost_summary(frame: pd.DataFrame, trading_days: int) -> dict[str, 
     }
 
 
-def _load_lot_size_map(contract_info_path: str) -> dict[str, float]:
-    """从 contract_info.parquet 加载品种 lot_size（per_unit 列）。"""
-    try:
-        df = pd.read_parquet(contract_info_path)
-        lot_size = df.groupby("fut_code")["per_unit"].first().dropna()
-        return lot_size.to_dict()
-    except Exception as e:
-        print(f"[WARN] 无法加载 lot_size，将使用默认值 1.0: {e}")
-        return {}
-
-
 def main() -> None:
     args = _parse_args()
 
@@ -120,6 +117,7 @@ def main() -> None:
         subdirs=["reports", "charts", "signals", "data"],
     )
 
+    # 海外版配置：禁用 CNY 流动性阈值，关闭 close-settle 混合修正
     strategy = SkewReversalStrategy(
         config={
             "top_pct": args.top_pct,
@@ -127,19 +125,26 @@ def main() -> None:
             "oi_lookback": args.oi_lookback,
             "rebalance_buckets": args.rebalance_buckets,
             "smoothing_window": args.smoothing_window,
-            "close_settle_blend_alpha": args.close_settle_blend_alpha,
-            "use_close_settle_correction": not args.disable_close_settle_correction,
+            # overseas 数据 close == settle，blend 无意义
+            "close_settle_blend_alpha": 0.0,
+            "use_close_settle_correction": False,
+            # 海外用合约数量 × 价格，不做 CNY 阈值过滤
+            "liquidity_threshold_pre2017": 0.0,
+            "liquidity_threshold_post2017": 0.0,
             "target_vol": args.target_vol,
             "transaction_cost_bps": args.cost_bps,
             "momentum_filter_window": args.momentum_filter_window,
             "momentum_filter_threshold": args.momentum_filter_threshold,
-            "sector_cap": args.sector_cap,
+            "exclude": sorted(_OVERSEAS_EXCLUDE),
         }
     )
 
     loader = DataLoader(
-        kline_source=ParquetSource(args.data_dir),
-        kline_schema=KlineSchema.tushare(),
+        kline_source=ParquetSource(args.kline_dir),
+        kline_schema=KlineSchema.overseas(),
+        contract_source=ParquetSource(args.contract_dir),
+        contract_schema=ContractSchema.overseas(),
+        instrument_schema=InstrumentSchema.overseas_from_contracts(),
     )
     backtest = VectorizedBacktest(
         lag=1,
@@ -151,16 +156,13 @@ def main() -> None:
     )
     context = StrategyContext(loader=loader, sector_map={}, backtest=backtest)
 
-    lot_size_map = _load_lot_size_map(args.contract_info)
-    if lot_size_map:
-        print(f"Loaded lot_size for {len(lot_size_map)} instruments from contract_info.")
-
+    # lot_size_map={} → 所有品种 multiplier=1.0；阈值为 0 时乘数无影响
     result = strategy.run_pipeline(
         context=context,
         start=args.start,
         end=args.end,
         verbose=args.verbose,
-        lot_size_map=lot_size_map,
+        lot_size_map={},
     )
 
     returns = result.returns
@@ -171,13 +173,11 @@ def main() -> None:
     out.save_parquet(returns, "data", "returns.parquet")
     out.save_json({"symbols": returns.columns.tolist()}, "data", "asset_list.json")
     out.save_parquet(result.settle_skew, "signals", "settle_skew.parquet")
-    out.save_parquet(result.close_skew, "signals", "close_skew.parquet")
     out.save_parquet(result.skew_factor, "signals", "skew_factor.parquet")
     out.save_parquet(result.oi_change, "signals", "oi_change.parquet")
     out.save_parquet(result.raw_positions, "signals", "raw_positions.parquet")
     out.save_parquet(result.smoothed_positions, "signals", "smoothed_positions.parquet")
     out.save_parquet(result.vol_scale, "signals", "vol_scale.parquet")
-    out.save_parquet(result.daily_positions, "signals", "daily_positions.parquet")
     out.save_parquet(positions, "signals", "positions.parquet")
 
     annual_df = annual_stats(pnl)
@@ -188,7 +188,7 @@ def main() -> None:
     )
     summary = pnl_stats(pnl)
     summary.update(_turnover_cost_summary(turnover_df, strategy.trading_days))
-    summary_df = pd.DataFrame([summary]).rename(index={0: "SkewReversal"})
+    summary_df = pd.DataFrame([summary]).rename(index={0: "SkewReversal_Overseas"})
 
     out.save_csv(annual_df, "reports", "annual.csv")
     out.save_csv(monthly_df, "reports", "monthly.csv")
@@ -197,22 +197,22 @@ def main() -> None:
 
     out.save_fig(
         plot_nav_with_drawdown(
-            {"SkewReversal": pnl},
-            title="China Futures Skew Reversal",
+            {"SkewReversal_Overseas": pnl},
+            title="Overseas Futures Skew Reversal",
         ),
         "charts", "nav_skew_reversal.png", dpi=150, bbox_inches="tight",
     )
     out.save_fig(
         plot_annual_bar(
-            {"SkewReversal": annual_df},
-            title="China Futures Skew Reversal — Annual Returns",
+            {"SkewReversal_Overseas": annual_df},
+            title="Overseas Futures Skew Reversal — Annual Returns",
         ),
         "charts", "annual_returns_bar.png", dpi=150,
     )
     out.save_fig(
         plot_monthly_heatmap(
             monthly_df,
-            title="China Futures Skew Reversal — Monthly Returns (%)",
+            title="Overseas Futures Skew Reversal — Monthly Returns (%)",
         ),
         "charts", "monthly_heatmap.png", dpi=150, bbox_inches="tight",
     )

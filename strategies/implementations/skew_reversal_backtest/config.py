@@ -31,6 +31,9 @@ SELECTION_WEIGHTING: str = "inv_vol"
 APPLY_ASSET_VOL_SCALE: bool = False
 MAX_GROSS_EXPOSURE: float = 1.50
 TRANSACTION_COST_BPS: float = 5.0
+MOMENTUM_FILTER_WINDOW: int = 0       # 0 = disabled; e.g. 63 = 3-month return
+MOMENTUM_FILTER_THRESHOLD: float = 0.05  # suppress long if 63d ret < -5%, short if > +5%
+SECTOR_CAP: float = 0.0               # 0 = disabled; e.g. 0.30 = max 30% gross per sector
 
 
 @dataclass(slots=True)
@@ -58,6 +61,9 @@ class SkewReversalConfig:
     target_vol: float = TARGET_VOL / 2.0
     trading_days: int = TRADING_DAYS
     transaction_cost_bps: float = TRANSACTION_COST_BPS
+    momentum_filter_window: int = MOMENTUM_FILTER_WINDOW
+    momentum_filter_threshold: float = MOMENTUM_FILTER_THRESHOLD
+    sector_cap: float = SECTOR_CAP
     exclude: list[str] = field(default_factory=lambda: sorted(EXCLUDE))
 
     def __post_init__(self) -> None:
@@ -95,6 +101,12 @@ class SkewReversalConfig:
             raise ValueError("trading_days must be > 0")
         if self.transaction_cost_bps < 0:
             raise ValueError("transaction_cost_bps must be >= 0")
+        if self.momentum_filter_window < 0:
+            raise ValueError("momentum_filter_window must be >= 0")
+        if self.momentum_filter_threshold < 0:
+            raise ValueError("momentum_filter_threshold must be >= 0")
+        if self.sector_cap < 0 or self.sector_cap > 1:
+            raise ValueError("sector_cap must be in [0, 1]")
 
         self.skew_windows = [int(window) for window in self.skew_windows]
         self.vol_scale_windows = [int(window) for window in self.vol_scale_windows]
